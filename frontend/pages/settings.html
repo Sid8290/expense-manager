@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Settings - Expense Manager</title>
+  </head>
+  <body>
+    <aside>
+      <nav>
+        <div class="logo"><span>Expense Manager</span></div>
+        <ul>
+          <li><a href="../index.html">Dashboard</a></li>
+          <li><a href="transactions.html">Transactions</a></li>
+          <li><a href="categories.html">Categories</a></li>
+          <li><a href="accounts.html">Accounts</a></li>
+          <li><a href="analytics.html">Analytics</a></li>
+          <li><a href="settings.html">Settings</a></li>
+        </ul>
+      </nav>
+    </aside>
+    <main>
+      <header>
+        <h1>Settings</h1>
+        <div class="navbar">
+          <form>
+            <label for="navbar-search">Search:</label>
+            <input type="text" id="navbar-search" />
+            <button type="submit">Search</button>
+          </form>
+
+          <button type="button">Notifications</button>
+          <a href="settings.html">Settings</a>
+        </div>
+      </header>
+      <section>
+        <h2>Account</h2>
+        <div class="card">
+          <h3>Information</h3>
+          <p>Name: Siddharth Jain</p>
+          <p>Email:Sid@example.com</p>
+        </div>
+        <div>
+          <h3>Update Account Information</h3>
+          <form class="update-account-form">
+            <label for="update-name">Name:</label>
+            <input
+              type="text"
+              id="update-name"
+              placeholder="Type your name :"
+            />
+
+            <label for="update-email">Update Email:</label>
+            <input
+              type="email"
+              id="update-email"
+              placeholder="Type your new Email :"
+            />
+
+            <label for="current-password">Current Password:</label>
+            <input
+              type="password"
+              id="current-password"
+              placeholder="Type your current password :"
+            />
+
+            <label for="new-password">New Password:</label>
+            <input
+              type="password"
+              id="new-password"
+              placeholder="Type your new password :"
+            />
+
+            <label for="confirm-password">Confirm New Password:</label>
+            <input
+              type="password"
+              id="confirm-password"
+              placeholder="Confirm your new password :"
+            />
+
+            <button type="submit">Update Account Settings</button>
+          </form>
+        </div>
+      </section>
+      <section>
+        <h2>Appearance</h2>
+        <form class="appearance-change-form">
+          <label for="theme-select">Theme:</label>
+          <select id="theme-select">
+            <option>Light</option>
+            <option>Dark</option>
+            <option>System Default</option>
+          </select>
+
+          <label for="language-select">Language:</label>
+          <select id="language-select">
+            <option>English</option>
+            <option>Spanish</option>
+            <option>French</option>
+            <option>German</option>
+            <option>Chinese</option>
+          </select>
+
+          <button type="submit">Save Appearance Settings</button>
+        </form>
+      </section>
+      <section>
+        <h2>Notifications</h2>
+        <form class="notification-settings-form">
+          <label for="transaction-notification"
+            >Transaction Notifications</label
+          >
+          <select id="transaction-notification">
+            <option>On</option>
+            <option>Off</option>
+          </select>
+
+          <label for="bill-reminders">Bill Reminders</label>
+          <select id="bill-reminders">
+            <option>On</option>
+            <option>Off</option>
+          </select>
+
+          <label for="monthly-summary">Monthly Summary</label>
+          <select id="monthly-summary">
+            <option>On</option>
+            <option>Off</option>
+          </select>
+
+          <button type="submit">Save Notification Settings</button>
+        </form>
+      </section>
+      <section>
+        <h2>Preferences</h2>
+        <div class="card">
+          <h3>Default Currency</h3>
+          <p>INR</p>
+          <h3>Date Format</h3>
+          <p>DD/MM/YYYY</p>
+          <h3>Default Transaction Type</h3>
+          <p>Expense</p>
+        </div>
+
+        <form class="update-preferences-form">
+          <label for="default-currency">Default Currency:</label>
+          <select id="default-currency">
+            <option>USD</option>
+            <option>EUR</option>
+            <option>GBP</option>
+            <option selected>INR</option>
+            <option>JPY</option>
+          </select>
+
+          <label for="date-format">Date Format:</label>
+          <select id="date-format">
+            <option selected>DD/MM/YYYY</option>
+            <option>MM/DD/YYYY</option>
+            <option>YYYY/MM/DD</option>
+          </select>
+
+          <label for="default-transaction-type"
+            >Default Transaction Type:</label
+          >
+          <select id="default-transaction-type">
+            <option>Income</option>
+            <option selected>Expense</option>
+          </select>
+
+          <button type="submit">Save Preferences</button>
+        </form>
+      </section>
+      <section>
+        <h2>Help</h2>
+
+        <div>
+          <a href="help.html">Help Center</a>
+          <a href="faq.html">Frequently Asked Questions</a>
+          <button type="button">Contact Support</button>
+        </div>
+      </section>
+      <section>
+        <h2>About</h2>
+        <div class="card">
+          <h3>Version</h3>
+          <p>1.0.0</p>
+          <h3>Developer</h3>
+          <p>Siddharth Jain</p>
+          <h3>Contact</h3>
+          <p>83********</p>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
