@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Accounts - Expense Manager</title>
+  </head>
+  <body>
+    <aside>
+        <nav>
+      <div class="logo"><span>Expense Manager</span></div>
+      <ul>
+        <li><a href="../index.html">Dashboard</a></li>
+        <li><a href="transactions.html">Transactions</a></li>
+        <li><a href="categories.html">Categories</a></li>
+        <li><a href="accounts.html">Accounts</a></li>
+        <li><a href="analytics.html">Analytics</a></li>
+        <li><a href="settings.html">Settings</a></li>
+      </ul>
+      </nav>
+    </aside>
+    <main>
+      <header>
+        <h1>Accounts</h1>
+
+        <div class="navbar">
+          <form>
+            <label for="navbar-search">Search:</label>
+            <input type="search" id="navbar-search" />
+            <button type="submit">Search</button>
+          </form>
+
+          <button type="button">Notifications</button>
+          <a href="settings.html">Settings</a>
+        </div>
+      </header>
+      <section>
+        <h2>Financial Position</h2>
+        <div class="card">
+          <h3>Available Money</h3>
+          <p>₹30,000</p>
+        </div>
+        <div class="card">
+          <h3>Total Assets</h3>
+          <p>₹1,00,000</p>
+        </div>
+        <div class="card">
+          <h3>Total Liabilities</h3>
+          <p>₹10,000</p>
+        </div>
+        <div class="card">
+          <h3>Net Position</h3>
+          <p>₹90,000</p>
+        </div>
+      </section>
+      <section>
+        <h2>Available Money</h2>
+        <div class="card">
+          <h3>Cash</h3>
+          <p>₹83,000</p>
+        </div>
+        <div class="card">
+          <h3>Bank Accounts</h3>
+          <p>₹50,000</p>
+        </div>
+        <div class="card">
+          <h3>Online Accounts</h3>
+          <p>₹3,000</p>
+        </div>
+      </section>
+      <section>
+        <h2>Assets</h2>
+        <div class="card">
+            <h3>Laptop</h3>
+            <p>₹50,000</p>
+        </div>
+        <div class="card">
+            <h3>Investments</h3>
+            <p>₹50,000</p>
+        </div>
+      </section>
+      <section>
+        <h2>Money to Receive</h2>
+        <div class="card">
+          <h3>Siddharth</h3>
+          <p>₹10,000</p>
+        </div>
+        <div class="card">
+          <h3>Rohit</h3>
+          <p>₹5,000</p>
+        </div>
+        <div class="card">
+          <h3>Amit</h3>
+          <p>₹2,000</p>
+        </div>
+      </section>
+      <section>
+        <h2>Money to Give</h2>
+        <div class="card">
+          <h3>Rahul</h3>
+          <p>₹5,000</p>
+        </div>
+        <div class="card">
+          <h3>Neha</h3>
+          <p>₹2,000</p> 
+        </div>
+        <div class="card">
+          <h3>Priya</h3>
+          <p>₹1,000</p>
+        </div>
+      </section>
+      <section>
+        <h2>Add Account</h2>
+        <form class="add-account-form">
+            <label for="account-name">Name:</label>
+            <input type="text" id="account-name">
+
+            <label for="account-type">Type:</label>
+            <select id="account-type">
+                <option>Cash</option>
+                <option>Bank Account</option>
+                <option>Online Account</option>
+            </select>
+
+            <label for="account-amount">Amount:</label>
+            <input type="number" id="account-amount">
+
+            <button type="submit">Add Account</button>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>
