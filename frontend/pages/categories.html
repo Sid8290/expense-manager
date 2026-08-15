@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Categories - Expense Manager</title>
+  </head>
+  <body>
+    <aside>
+      <nav>
+        <div class="logo"><span>Expense Manager</span></div>
+        <ul>
+          <li><a href="../index.html">Dashboard</a></li>
+          <li><a href="transactions.html">Transactions</a></li>
+          <li><a href="categories.html">Categories</a></li>
+          <li><a href="accounts.html">Accounts</a></li>
+          <li><a href="analytics.html">Analytics</a></li>
+          <li><a href="settings.html">Settings</a></li>
+        </ul>
+      </nav>
+    </aside>
+    <main>
+      <header>
+        <h1>Categories</h1>
+
+        <form>
+          <label for="navbar-search">Search:</label>
+          <input type="search" id="navbar-search" />
+          <button type="submit">Search</button>
+        </form>
+
+        <button type="button">Notifications</button>
+
+        <a href="settings.html">Settings</a>
+      </header>
+      <section>
+        <h2>Expense Categories</h2>
+        <div class="card">
+          <h3>Groceries</h3>
+          <p>₹5,000</p>
+          <p>3 transactions</p>
+        </div>
+        <div class="card">
+          <h3>Bills</h3>
+          <p>₹3,000</p>
+          <p>1 transaction</p>
+        </div>
+        <div class="card">
+          <h3>Transport</h3>
+          <p>₹2,000</p>
+          <p>5 transactions</p>
+        </div>
+      </section>
+      <section>
+        <h2>Income Categories</h2>
+        <div class="card">
+          <h3>Salary</h3>
+          <p>₹60,000</p>
+          <p>1 transaction</p>
+        </div>
+        <div class="card">
+          <h3>Freelance</h3>
+          <p>₹3,000</p>
+          <p>5 transactions</p>
+        </div>
+      </section>
+      <section>
+        <h2>Add Category</h2>
+            <form class="add-category-form">
+                <label for="category-name">Name:</label>
+                <input type="text" id="category-name">
+
+                <label for="category-type">Type:</label>
+                <select id="category-type">
+                    <option>Income</option>
+                    <option>Expense</option>
+                </select>
+
+                <button type="submit">Add Category</button>
+            </form>
+      </section>
+    </main>
+  </body>
+</html>
