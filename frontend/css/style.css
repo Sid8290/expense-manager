@@ -232,3 +232,22 @@ section h2 {
   box-shadow: var(--shadow-hover);
 }
 
+/* Buttons */
+
+button {
+  padding: var(--spacing-small);
+
+  border: none;
+  border-radius: var(--radius-medium);
+
+  background-color: var(--primary);
+  color: white;
+
+  cursor: pointer;
+
+  transition: background-color 0.3s;
+}
+
+button:hover {
+  background-color: var(--primary-hover);
+}
