@@ -1,97 +1,156 @@
 <!doctype html>
+
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <link rel="stylesheet" href="../css/style.css" />
-    <link
-      rel="stylesheet"
-      href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/7.3.1/css/all.min.css"
-      integrity="sha512-QeR2VH+lsBE5LSAe1Q5EnTBbe7XTBubt8dG93Y7gidSgdMCr8nVqKcfKAMyN96SV8KDbZVTDXChatu5G2KQGzg=="
-      crossorigin="anonymous"
-      referrerpolicy="no-referrer"
-    />
-    <title>Categories - Expense Manager</title>
+
+
+<link rel="stylesheet" href="../css/style.css" />
+
+<link
+  rel="stylesheet"
+  href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/7.3.1/css/all.min.css"
+  integrity="sha512-QeR2VH+lsBE5LSAe1Q5EnTBbe7XTBubt8dG93Y7gidSgdMCr8nVqKcfKAMyN96SV8KDbZVTDXChatu5G2KQGzg=="
+  crossorigin="anonymous"
+  referrerpolicy="no-referrer"
+/>
+
+<title>Categories - Expense Manager</title>
+
+
   </head>
+
   <body>
     <aside>
       <nav>
-        <div class="logo"><span>Expense Manager</span></div>
-        <ul>
-          <li><a href="../index.html">Dashboard</a></li>
-          <li><a href="transactions.html">Transactions</a></li>
-          <li><a href="categories.html">Categories</a></li>
-          <li><a href="accounts.html">Accounts</a></li>
-          <li><a href="analytics.html">Analytics</a></li>
-          <li><a href="settings.html">Settings</a></li>
-        </ul>
-      </nav>
-    </aside>
-    <main>
-      <header>
-        <h1>Categories</h1>
-        <div class="navbar">
-          <form>
-            <label for="navbar-search">Search:</label>
-            <input type="search" id="navbar-search" />
-            <button type="submit">Search</button>
-          </form>
+        <div class="logo">
+          <span>Expense Manager</span>
+        </div>
 
-          <button type="button">Notifications</button>
 
-          <a href="settings.html">Settings</a>
-        </div>
-      </header>
-      <section>
-        <h2>Expense Categories</h2>
-        <div class="card-container">
-        <div class="card">
-          <h3>Groceries</h3>
-          <p>₹5,000</p>
-          <p>3 transactions</p>
-        </div>
-        <div class="card">
-          <h3>Bills</h3>
-          <p>₹3,000</p>
-          <p>1 transaction</p>
-        </div>
-        <div class="card">
-          <h3>Transport</h3>
-          <p>₹2,000</p>
-          <p>5 transactions</p>
-        </div>
-        </div>
-      </section>
-      <section>
-        <h2>Income Categories</h2>
-        <div class="card-container">
-        <div class="card">
-          <h3>Salary</h3>
-          <p>₹60,000</p>
-          <p>1 transaction</p>
-        </div>
-        <div class="card">
-          <h3>Freelance</h3>
-          <p>₹3,000</p>
-          <p>5 transactions</p>
-        </div>
-        </div>
-      </section>
-      <section>
-        <h2>Add Category</h2>
-        <form class="add-category-form">
-          <label for="category-name">Name:</label>
-          <input type="text" id="category-name" />
+    <ul>
+      <li>
+        <a href="../index.html">Dashboard</a>
+      </li>
+      <li>
+        <a href="transactions.html">Transactions</a>
+      </li>
+      <li>
+        <a href="categories.html" class="active">Categories</a>
+      </li>
+      <li>
+        <a href="accounts.html">Accounts</a>
+      </li>
+      <li>
+        <a href="analytics.html">Analytics</a>
+      </li>
+      <li>
+        <a href="settings.html">Settings</a>
+      </li>
+    </ul>
+  </nav>
+</aside>
 
-          <label for="category-type">Type:</label>
-          <select id="category-type">
-            <option>Income</option>
-            <option>Expense</option>
-          </select>
+<main>
+  <header>
+    <h1>Categories</h1>
 
-          <button type="submit">Add Category</button>
-        </form>
-      </section>
-    </main>
+    <div class="navbar">
+      <form>
+        <label for="navbar-search">Search:</label>
+
+        <input
+          type="search"
+          id="navbar-search"
+          name="search"
+          placeholder="Search"
+        />
+
+        <button type="submit">Search</button>
+      </form>
+
+      <button
+        type="button"
+        aria-label="Notifications"
+      >
+        <i class="fa-solid fa-bell"></i>
+      </button>
+
+      <a href="settings.html">Settings</a>
+    </div>
+  </header>
+
+  <section>
+    <h2>Expense Categories</h2>
+
+    <div class="card-container">
+      <div class="card">
+        <h3>Groceries</h3>
+        <p>₹5,000</p>
+        <p>3 transactions</p>
+      </div>
+
+      <div class="card">
+        <h3>Bills</h3>
+        <p>₹3,000</p>
+        <p>1 transaction</p>
+      </div>
+
+      <div class="card">
+        <h3>Transport</h3>
+        <p>₹2,000</p>
+        <p>5 transactions</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Income Categories</h2>
+
+    <div class="card-container">
+      <div class="card">
+        <h3>Salary</h3>
+        <p>₹60,000</p>
+        <p>1 transaction</p>
+      </div>
+
+      <div class="card">
+        <h3>Freelance</h3>
+        <p>₹3,000</p>
+        <p>5 transactions</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Add Category</h2>
+
+    <form class="add-category-form">
+      <label for="category-name">Name:</label>
+
+      <input
+        type="text"
+        id="category-name"
+        name="category-name"
+        required
+      />
+
+      <label for="category-type">Type:</label>
+
+      <select
+        id="category-type"
+        name="category-type"
+      >
+        <option value="income">Income</option>
+        <option value="expense">Expense</option>
+      </select>
+
+      <button type="submit">Add Category</button>
+    </form>
+  </section>
+</main>
+```
+
   </body>
 </html>
