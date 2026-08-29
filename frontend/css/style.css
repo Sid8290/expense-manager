@@ -80,6 +80,7 @@ a {
 
 aside {
   width: 240px;
+
   background-color: var(--sidebar);
 
   padding: var(--spacing-medium);
@@ -135,6 +136,7 @@ aside a:hover {
 
 main {
   flex: 1;
+  min-width: 0;
 }
 
 /* Header */
@@ -195,9 +197,9 @@ section h2 {
   gap: var(--spacing-medium);
 }
 
-.item1,
-.item2,
-.item5 {
+.financial-overview,
+.income-expense-chart,
+.todo-list {
   grid-column: 1 / -1;
 }
 
@@ -321,14 +323,14 @@ tr:hover {
 
 /* Upcoming Expenses */
 
-.item4 ul {
+.upcoming-expenses ul {
   display: flex;
   flex-direction: column;
 
   gap: var(--spacing-medium);
 }
 
-.item4 li {
+.upcoming-expenses li {
   display: flex;
   flex-direction: column;
 
@@ -344,20 +346,20 @@ tr:hover {
   transition: box-shadow 0.3s;
 }
 
-.item4 li:hover {
+.upcoming-expenses li:hover {
   box-shadow: var(--shadow-hover);
 }
 
 /* To-Do List */
 
-.item5 ul {
+.todo-list ul {
   display: flex;
   flex-direction: column;
 
   gap: var(--spacing-medium);
 }
 
-.item5 li {
+.todo-list li {
   padding: var(--spacing-small);
 
   border: 1px solid var(--border);
@@ -366,6 +368,46 @@ tr:hover {
   transition: box-shadow 0.3s;
 }
 
-.item5 li:hover {
+.todo-list li:hover {
   box-shadow: var(--shadow-hover);
+}
+
+/* Media Queries */
+
+@media (max-width: 1024px) {
+  aside {
+    width: 200px;
+  }
+
+  .card-container {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .navbar {
+    gap: var(--spacing-medium);
+  }
+}
+
+@media (max-width: 768px) {
+  aside {
+    display: none;
+  }
+
+  .card-container {
+    grid-template-columns: 1fr;
+  }
+
+  .main-grid {
+    grid-template-columns: 1fr;
+  }
+
+  header {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .navbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }
