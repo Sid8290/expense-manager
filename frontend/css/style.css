@@ -1,4 +1,4 @@
-/** root **/
+/** Root **/
 
 :root {
   /* Colors */
@@ -9,7 +9,9 @@
 
   --primary: #2563eb;
   --primary-light: #dbeafe;
+  --primary-dark: rgb(29, 29, 209);
   --primary-hover: #072475;
+  --primary-active: #051a5c;
 
   --text-primary: #1e293b;
   --text-secondary: #64748b;
@@ -169,10 +171,9 @@ header {
   border: 1px solid var(--border);
 }
 
-/* Index Main */
+/* Sections */
 
 section {
-  margin: var(--spacing-medium);
   padding: var(--spacing-medium);
 }
 
@@ -182,6 +183,22 @@ section h2 {
   margin-bottom: var(--spacing-medium);
 
   color: var(--text-primary);
+}
+
+/* Main Grid */
+
+.main-grid {
+  display: grid;
+
+  grid-template-columns: repeat(2, 1fr);
+
+  gap: var(--spacing-medium);
+}
+
+.item1,
+.item2,
+.item5 {
+  grid-column: 1 / -1;
 }
 
 /* Card Layout */
@@ -228,13 +245,14 @@ section h2 {
 
 .card:hover {
   transform: translateY(-4px);
-
   box-shadow: var(--shadow-hover);
 }
 
 /* Buttons */
 
 button {
+  font: inherit;
+
   padding: var(--spacing-small);
 
   border: none;
@@ -250,4 +268,104 @@ button {
 
 button:hover {
   background-color: var(--primary-hover);
+}
+
+button:active {
+  background-color: var(--primary-active);
+}
+
+/* Form Controls */
+
+input,
+select,
+textarea {
+  padding: var(--spacing-small);
+
+  border: 1px solid var(--border);
+  border-radius: var(--radius-medium);
+
+  background-color: var(--surface);
+}
+
+/* Form Control Focus */
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--primary);
+  outline: 2px solid var(--primary-light);
+}
+
+/* Table */
+
+table {
+  width: 100%;
+
+  border-collapse: collapse;
+
+  background-color: var(--surface);
+}
+
+th,
+td {
+  border: 1px solid var(--border);
+
+  padding: var(--spacing-small);
+
+  text-align: center;
+}
+
+tr:hover {
+  background-color: var(--primary-light);
+}
+
+/* Upcoming Expenses */
+
+.item4 ul {
+  display: flex;
+  flex-direction: column;
+
+  gap: var(--spacing-medium);
+}
+
+.item4 li {
+  display: flex;
+  flex-direction: column;
+
+  gap: var(--spacing-small);
+
+  padding: var(--spacing-small);
+
+  background-color: var(--surface);
+
+  border: 1px solid var(--border);
+  border-radius: var(--radius-medium);
+
+  transition: box-shadow 0.3s;
+}
+
+.item4 li:hover {
+  box-shadow: var(--shadow-hover);
+}
+
+/* To-Do List */
+
+.item5 ul {
+  display: flex;
+  flex-direction: column;
+
+  gap: var(--spacing-medium);
+}
+
+.item5 li {
+  padding: var(--spacing-small);
+
+  border: 1px solid var(--border);
+  border-radius: var(--radius-medium);
+
+  transition: box-shadow 0.3s;
+}
+
+.item5 li:hover {
+  box-shadow: var(--shadow-hover);
 }
