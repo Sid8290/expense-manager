@@ -15,13 +15,13 @@
       referrerpolicy="no-referrer"
     />
 
+    <script src="../frontend/js/script.js"></script>
+
     <title>Expense Manager</title>
   </head>
 
-  <body>
-    <aside>
-      <!-- Sidebar -->
-
+  <body data-page="dashboard">
+    <aside id="sidebar">
       <nav aria-label="Main navigation">
         <div class="logo">
           <span>Expense Manager</span>
@@ -57,19 +57,40 @@
 
     <main>
       <header>
-        <h1>Dashboard</h1>
+        <div class="header-title">
+          <button
+            type="button"
+            class="menu-toggle"
+            aria-label="Toggle menu"
+            aria-expanded="false"
+            aria-controls="sidebar"
+          >
+            <i class="fa-solid fa-bars"></i>
+          </button>
+
+          <h1>Dashboard</h1>
+        </div>
 
         <div class="navbar">
           <form aria-label="Search">
             <label for="navbar-search">Search:</label>
 
-            <input type="search" id="navbar-search" placeholder="Search..." />
+            <input
+              type="search"
+              id="navbar-search"
+              placeholder="Search transactions..."
+            />
 
             <button type="submit">Search</button>
           </form>
 
-          <button type="button" aria-label="Notifications">
+          <button
+            type="button"
+            class="notification-button"
+            aria-label="Notifications"
+          >
             <i class="fa-solid fa-bell"></i>
+            <span class="notification-count" hidden></span>
           </button>
 
           <a href="pages/settings.html">Settings</a>
@@ -84,19 +105,22 @@
             <div class="card">
               <h3>Total Expense</h3>
 
-              <p class="expense">₹12,500</p>
+              <p class="expense" id="total-expense">₹0</p>
+              <p>All time</p>
             </div>
 
             <div class="card">
               <h3>Total Income</h3>
 
-              <p class="income">₹25,000</p>
+              <p class="income" id="total-income">₹0</p>
+              <p>All time</p>
             </div>
 
             <div class="card">
-              <h3>Current Money</h3>
+              <h3>Total Balance</h3>
 
-              <p>₹42,500</p>
+              <p id="total-balance">₹0</p>
+              <p>Cash, bank and online accounts</p>
             </div>
           </div>
         </section>
@@ -104,9 +128,7 @@
         <section class="income-expense-chart">
           <h2>Income vs Expense</h2>
 
-          <div class="chart">
-            <!-- Chart content -->
-          </div>
+          <div class="chart" id="dashboard-chart"></div>
         </section>
 
         <section class="recent-transactions">
@@ -123,28 +145,7 @@
                 </tr>
               </thead>
 
-              <tbody>
-                <tr>
-                  <td>15 Aug</td>
-                  <td>Grocery Shopping</td>
-                  <td>Food</td>
-                  <td class="amount expense">₹1,200</td>
-                </tr>
-
-                <tr>
-                  <td>20 Aug</td>
-                  <td>Salary</td>
-                  <td>Income</td>
-                  <td class="amount income">₹25,000</td>
-                </tr>
-
-                <tr>
-                  <td>25 Aug</td>
-                  <td>Electricity Bill</td>
-                  <td>Utilities</td>
-                  <td class="amount expense">₹1,500</td>
-                </tr>
-              </tbody>
+              <tbody id="recent-transactions-body"></tbody>
             </table>
           </div>
         </section>
@@ -152,35 +153,65 @@
         <section class="upcoming-expenses">
           <h2>Upcoming Expenses</h2>
 
-          <ul>
-            <li>
-              <h3>Electricity Bill</h3>
-              <p>18 August</p>
-              <p>₹1,500</p>
-            </li>
+          <ul id="bill-list"></ul>
 
-            <li>
-              <h3>Internet Bill</h3>
-              <p>22 August</p>
-              <p>₹800</p>
-            </li>
+          <p class="empty-message" id="bill-empty" hidden>
+            No upcoming expenses.
+          </p>
 
-            <li>
-              <h3>Rent</h3>
-              <p>1 September</p>
-              <p>₹10,000</p>
-            </li>
-          </ul>
+          <form class="inline-form" id="bill-form">
+            <label for="bill-name" class="visually-hidden">Expense name</label>
+            <input
+              type="text"
+              id="bill-name"
+              placeholder="Expense name"
+              maxlength="50"
+              required
+            />
+
+            <label for="bill-date" class="visually-hidden">Due date</label>
+            <input type="date" id="bill-date" required />
+
+            <label for="bill-amount" class="visually-hidden">Amount</label>
+            <input
+              type="number"
+              id="bill-amount"
+              placeholder="Amount"
+              min="0.01"
+              max="1000000000"
+              step="0.01"
+              required
+            />
+
+            <button type="submit">Add</button>
+
+            <p class="form-message" role="status"></p>
+          </form>
         </section>
 
         <section class="todo-list">
           <h2>To-Do List</h2>
 
-          <ul>
-            <li>Take ₹500 From Siddharth</li>
-            <li>Pay electricity bill</li>
-            <li>Give ₹1,000 to Ankit</li>
-          </ul>
+          <ul id="todo-items"></ul>
+
+          <p class="empty-message" id="todo-empty" hidden>
+            Nothing to do right now.
+          </p>
+
+          <form class="inline-form" id="todo-form">
+            <label for="todo-text" class="visually-hidden">New task</label>
+            <input
+              type="text"
+              id="todo-text"
+              placeholder="Add a task..."
+              maxlength="100"
+              required
+            />
+
+            <button type="submit">Add Task</button>
+
+            <p class="form-message" role="status"></p>
+          </form>
         </section>
       </div>
     </main>

@@ -12,12 +12,13 @@
       crossorigin="anonymous"
       referrerpolicy="no-referrer"
     />
+    <script src="../js/script.js"></script>
     <title>Settings - Expense Manager</title>
   </head>
 
-  <body>
-    <aside>
-      <nav>
+  <body data-page="settings">
+    <aside id="sidebar">
+      <nav aria-label="Main navigation">
         <div class="logo">
           <span>Expense Manager</span>
         </div>
@@ -35,16 +36,39 @@
 
     <main>
       <header>
-        <h1>Settings</h1>
+        <div class="header-title">
+          <button
+            type="button"
+            class="menu-toggle"
+            aria-label="Toggle menu"
+            aria-expanded="false"
+            aria-controls="sidebar"
+          >
+            <i class="fa-solid fa-bars"></i>
+          </button>
+
+          <h1>Settings</h1>
+        </div>
 
         <div class="navbar">
-          <form>
+          <form aria-label="Search">
             <label for="navbar-search">Search:</label>
-            <input type="search" id="navbar-search" placeholder="Search"/>
+            <input
+              type="search"
+              id="navbar-search"
+              placeholder="Search transactions..."
+            />
             <button type="submit">Search</button>
           </form>
 
-          <button type="button">Notifications</button>
+          <button
+            type="button"
+            class="notification-button"
+            aria-label="Notifications"
+          >
+            <i class="fa-solid fa-bell"></i>
+            <span class="notification-count" hidden></span>
+          </button>
 
           <a href="settings.html">Settings</a>
         </div>
@@ -56,8 +80,8 @@
         <div class="settings-grid">
           <div class="card">
             <h3>Information</h3>
-            <p>Name: Siddharth Jain</p>
-            <p>Email: Sid@example.com</p>
+            <p id="info-name">Name: Siddharth Jain</p>
+            <p id="info-email">Email: Sid@example.com</p>
           </div>
 
           <div class="settings-form-container">
@@ -68,6 +92,7 @@
               <input
                 type="text"
                 id="update-name"
+                maxlength="50"
                 placeholder="Type your name"
               />
 
@@ -82,6 +107,7 @@
               <input
                 type="password"
                 id="current-password"
+                autocomplete="off"
                 placeholder="Type your current password"
               />
 
@@ -89,6 +115,7 @@
               <input
                 type="password"
                 id="new-password"
+                autocomplete="off"
                 placeholder="Type your new password"
               />
 
@@ -96,10 +123,18 @@
               <input
                 type="password"
                 id="confirm-password"
+                autocomplete="off"
                 placeholder="Confirm your new password"
               />
 
+              <p class="form-note">
+                Only the name and email are saved. The password fields are for
+                display only because this app has no login.
+              </p>
+
               <button type="submit">Update Account Settings</button>
+
+              <p class="form-message" role="status"></p>
             </form>
           </div>
         </div>
@@ -111,21 +146,14 @@
         <form class="appearance-change-form settings-form">
           <label for="theme-select">Theme:</label>
           <select id="theme-select">
-            <option>Light</option>
-            <option>Dark</option>
-            <option>System Default</option>
-          </select>
-
-          <label for="language-select">Language:</label>
-          <select id="language-select">
-            <option>English</option>
-            <option>Spanish</option>
-            <option>French</option>
-            <option>German</option>
-            <option>Chinese</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+            <option value="system">System Default</option>
           </select>
 
           <button type="submit">Save Appearance Settings</button>
+
+          <p class="form-message" role="status"></p>
         </form>
       </section>
 
@@ -137,23 +165,25 @@
             Transaction Notifications:
           </label>
           <select id="transaction-notification">
-            <option>On</option>
-            <option>Off</option>
+            <option value="on">On</option>
+            <option value="off">Off</option>
           </select>
 
           <label for="bill-reminders">Bill Reminders:</label>
           <select id="bill-reminders">
-            <option>On</option>
-            <option>Off</option>
+            <option value="on">On</option>
+            <option value="off">Off</option>
           </select>
 
           <label for="monthly-summary">Monthly Summary:</label>
           <select id="monthly-summary">
-            <option>On</option>
-            <option>Off</option>
+            <option value="on">On</option>
+            <option value="off">Off</option>
           </select>
 
           <button type="submit">Save Notification Settings</button>
+
+          <p class="form-message" role="status"></p>
         </form>
       </section>
 
@@ -163,41 +193,48 @@
         <div class="settings-grid">
           <div class="card">
             <h3>Default Currency</h3>
-            <p>INR</p>
+            <p id="pref-currency">INR</p>
 
             <h3>Date Format</h3>
-            <p>DD/MM/YYYY</p>
+            <p id="pref-date-format">DD/MM/YYYY</p>
 
             <h3>Default Transaction Type</h3>
-            <p>Expense</p>
+            <p id="pref-type">Expense</p>
           </div>
 
           <form class="update-preferences-form settings-form">
             <label for="default-currency">Default Currency:</label>
             <select id="default-currency">
-              <option>USD</option>
-              <option>EUR</option>
-              <option>GBP</option>
-              <option selected>INR</option>
-              <option>JPY</option>
+              <option value="USD">USD</option>
+              <option value="EUR">EUR</option>
+              <option value="GBP">GBP</option>
+              <option value="INR" selected>INR</option>
+              <option value="JPY">JPY</option>
             </select>
 
             <label for="date-format">Date Format:</label>
             <select id="date-format">
-              <option selected>DD/MM/YYYY</option>
-              <option>MM/DD/YYYY</option>
-              <option>YYYY/MM/DD</option>
+              <option value="DD/MM/YYYY" selected>DD/MM/YYYY</option>
+              <option value="MM/DD/YYYY">MM/DD/YYYY</option>
+              <option value="YYYY/MM/DD">YYYY/MM/DD</option>
             </select>
 
             <label for="default-transaction-type">
               Default Transaction Type:
             </label>
             <select id="default-transaction-type">
-              <option>Income</option>
-              <option selected>Expense</option>
+              <option value="income">Income</option>
+              <option value="expense" selected>Expense</option>
             </select>
 
+            <p class="form-note">
+              Changing the currency only changes the symbol and number format.
+              Amounts are not converted.
+            </p>
+
             <button type="submit">Save Preferences</button>
+
+            <p class="form-message" role="status"></p>
           </form>
         </div>
       </section>
@@ -205,10 +242,49 @@
       <section>
         <h2>Help</h2>
 
+        <div class="faq">
+          <details>
+            <summary>How do I add a transaction?</summary>
+            <p>
+              Open the Transactions page, fill in the Add Transaction form and
+              press Add Transaction.
+            </p>
+          </details>
+
+          <details>
+            <summary>Where is my data stored?</summary>
+            <p>
+              Everything is stored in this browser using localStorage. Nothing
+              is sent to a server, and clearing your browser data removes it.
+            </p>
+          </details>
+
+          <details>
+            <summary>Why can't I delete an account or category?</summary>
+            <p>
+              Accounts and categories that are used by transactions cannot be
+              deleted. Delete those transactions first.
+            </p>
+          </details>
+
+          <details>
+            <summary>What do the account types mean?</summary>
+            <p>
+              Cash, bank and online accounts hold your money and change with
+              transactions. Assets, money to receive and money to give are
+              tracked as fixed amounts.
+            </p>
+          </details>
+        </div>
+      </section>
+
+      <section>
+        <h2>Data</h2>
+
         <div class="settings-actions">
-          <a href="help.html">Help Center</a>
-          <a href="faq.html">Frequently Asked Questions</a>
-          <button type="button">Contact Support</button>
+          <button type="button" class="btn-danger" id="reset-data">
+            Reset All Data
+          </button>
         </div>
       </section>
 

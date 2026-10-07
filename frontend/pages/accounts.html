@@ -12,12 +12,13 @@
       crossorigin="anonymous"
       referrerpolicy="no-referrer"
     />
+    <script src="../js/script.js"></script>
     <title>Accounts - Expense Manager</title>
   </head>
 
-  <body>
-    <aside>
-      <nav>
+  <body data-page="accounts">
+    <aside id="sidebar">
+      <nav aria-label="Main navigation">
         <div class="logo">
           <span>Expense Manager</span>
         </div>
@@ -35,17 +36,38 @@
 
     <main>
       <header>
-        <h1>Accounts</h1>
+        <div class="header-title">
+          <button
+            type="button"
+            class="menu-toggle"
+            aria-label="Toggle menu"
+            aria-expanded="false"
+            aria-controls="sidebar"
+          >
+            <i class="fa-solid fa-bars"></i>
+          </button>
+
+          <h1>Accounts</h1>
+        </div>
 
         <div class="navbar">
-          <form>
+          <form aria-label="Search">
             <label for="navbar-search">Search:</label>
-            <input type="search" id="navbar-search" placeholder="Search" />
+            <input
+              type="search"
+              id="navbar-search"
+              placeholder="Search transactions..."
+            />
             <button type="submit">Search</button>
           </form>
 
-          <button type="button" aria-label="Notifications">
+          <button
+            type="button"
+            class="notification-button"
+            aria-label="Notifications"
+          >
             <i class="fa-solid fa-bell"></i>
+            <span class="notification-count" hidden></span>
           </button>
 
           <a href="settings.html">Settings</a>
@@ -55,25 +77,25 @@
       <section>
         <h2>Financial Position</h2>
 
-        <div class="card-container">
+        <div class="card-container financial-position-cards">
           <div class="card">
             <h3>Available Money</h3>
-            <p>₹30,000</p>
+            <p id="position-available">₹0</p>
           </div>
 
           <div class="card">
             <h3>Total Assets</h3>
-            <p>₹1,00,000</p>
+            <p id="position-assets">₹0</p>
           </div>
 
           <div class="card">
             <h3>Total Liabilities</h3>
-            <p>₹10,000</p>
+            <p id="position-liabilities">₹0</p>
           </div>
 
           <div class="card">
             <h3>Net Position</h3>
-            <p>₹90,000</p>
+            <p id="position-net">₹0</p>
           </div>
         </div>
       </section>
@@ -81,80 +103,25 @@
       <section>
         <h2>Available Money</h2>
 
-        <div class="card-container">
-          <div class="card">
-            <h3>Cash</h3>
-            <p>₹83,000</p>
-          </div>
-
-          <div class="card">
-            <h3>Bank Accounts</h3>
-            <p>₹50,000</p>
-          </div>
-
-          <div class="card">
-            <h3>Online Accounts</h3>
-            <p>₹3,000</p>
-          </div>
-        </div>
+        <div class="card-container" id="money-accounts"></div>
       </section>
 
       <section>
         <h2>Assets</h2>
 
-        <div class="card-container">
-          <div class="card">
-            <h3>Laptop</h3>
-            <p>₹50,000</p>
-          </div>
-
-          <div class="card">
-            <h3>Investments</h3>
-            <p>₹50,000</p>
-          </div>
-        </div>
+        <div class="card-container" id="asset-accounts"></div>
       </section>
 
       <section>
         <h2>Money to Receive</h2>
 
-        <div class="card-container">
-          <div class="card">
-            <h3>Siddharth</h3>
-            <p>₹10,000</p>
-          </div>
-
-          <div class="card">
-            <h3>Rohit</h3>
-            <p>₹5,000</p>
-          </div>
-
-          <div class="card">
-            <h3>Amit</h3>
-            <p>₹2,000</p>
-          </div>
-        </div>
+        <div class="card-container" id="receivable-accounts"></div>
       </section>
 
       <section>
         <h2>Money to Give</h2>
 
-        <div class="card-container">
-          <div class="card">
-            <h3>Rahul</h3>
-            <p>₹5,000</p>
-          </div>
-
-          <div class="card">
-            <h3>Neha</h3>
-            <p>₹2,000</p>
-          </div>
-
-          <div class="card">
-            <h3>Priya</h3>
-            <p>₹1,000</p>
-          </div>
-        </div>
+        <div class="card-container" id="payable-accounts"></div>
       </section>
 
       <section>
@@ -162,19 +129,36 @@
 
         <form class="add-account-form">
           <label for="account-name">Name:</label>
-          <input type="text" id="account-name" required />
+          <input type="text" id="account-name" maxlength="40" required />
 
           <label for="account-type">Type:</label>
           <select id="account-type" required>
             <option value="cash">Cash</option>
             <option value="bank">Bank Account</option>
             <option value="online">Online Account</option>
+            <option value="asset">Asset</option>
+            <option value="receivable">Money to Receive</option>
+            <option value="payable">Money to Give</option>
           </select>
 
-          <label for="account-amount">Amount:</label>
-          <input type="number" id="account-amount" min="0" required />
+          <label for="account-amount">Initial Amount:</label>
+          <input
+            type="number"
+            id="account-amount"
+            min="0"
+            max="1000000000"
+            step="0.01"
+            required
+          />
+
+          <p class="form-note">
+            Cash, bank and online accounts are used by transactions and their
+            balances change automatically.
+          </p>
 
           <button type="submit">Add Account</button>
+
+          <p class="form-message" role="status"></p>
         </form>
       </section>
     </main>

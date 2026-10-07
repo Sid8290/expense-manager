@@ -15,12 +15,14 @@
       referrerpolicy="no-referrer"
     />
 
+    <script src="../js/script.js"></script>
+
     <title>Transactions - Expense Manager</title>
   </head>
 
-  <body>
-    <aside>
-      <nav>
+  <body data-page="transactions">
+    <aside id="sidebar">
+      <nav aria-label="Main navigation">
         <div class="logo">
           <span>Expense Manager</span>
         </div>
@@ -40,17 +42,38 @@
 
     <main>
       <header>
-        <h1>Transactions</h1>
+        <div class="header-title">
+          <button
+            type="button"
+            class="menu-toggle"
+            aria-label="Toggle menu"
+            aria-expanded="false"
+            aria-controls="sidebar"
+          >
+            <i class="fa-solid fa-bars"></i>
+          </button>
+
+          <h1>Transactions</h1>
+        </div>
 
         <div class="navbar">
-          <form>
+          <form aria-label="Search">
             <label for="navbar-search">Search:</label>
-            <input type="search" id="navbar-search" placeholder="Search" />
+            <input
+              type="search"
+              id="navbar-search"
+              placeholder="Search transactions..."
+            />
             <button type="submit">Search</button>
           </form>
 
-          <button type="button" aria-label="Notifications">
+          <button
+            type="button"
+            class="notification-button"
+            aria-label="Notifications"
+          >
             <i class="fa-solid fa-bell"></i>
+            <span class="notification-count" hidden></span>
           </button>
 
           <a href="settings.html">Settings</a>
@@ -62,7 +85,11 @@
 
         <form class="transaction-filters-form">
           <label for="filter-search">Search:</label>
-          <input type="search" id="filter-search" />
+          <input
+            type="search"
+            id="filter-search"
+            placeholder="Description, category, note..."
+          />
 
           <label for="filter-type">Type:</label>
           <select id="filter-type">
@@ -73,17 +100,18 @@
 
           <label for="filter-category">Category:</label>
           <select id="filter-category">
-            <option value="all">All</option>
-            <option value="groceries">Groceries</option>
-            <option value="bills">Bills</option>
-            <option value="salary">Salary</option>
-            <option value="transport">Transport</option>
-            <option value="entertainment">Entertainment</option>
-            <option value="shopping">Shopping</option>
-            <option value="others">Others</option>
+            <option value="">All</option>
+          </select>
+
+          <label for="filter-account">Account:</label>
+          <select id="filter-account">
+            <option value="">All</option>
           </select>
 
           <button type="submit">Search</button>
+          <button type="button" class="btn-secondary" id="filter-clear">
+            Clear
+          </button>
         </form>
       </section>
 
@@ -92,7 +120,7 @@
 
         <form class="add-transaction-form">
           <label for="description">Description:</label>
-          <input type="text" id="description" required />
+          <input type="text" id="description" maxlength="100" required />
 
           <label for="transaction-type">Type:</label>
           <select id="transaction-type" required>
@@ -101,37 +129,44 @@
           </select>
 
           <label for="transaction-category">Category:</label>
-          <select id="transaction-category" required>
-            <option value="groceries">Groceries</option>
-            <option value="bills">Bills</option>
-            <option value="salary">Salary</option>
-            <option value="transport">Transport</option>
-            <option value="entertainment">Entertainment</option>
-            <option value="shopping">Shopping</option>
-            <option value="others">Others</option>
-          </select>
+          <select id="transaction-category" required></select>
 
           <label for="account">Account:</label>
-          <select id="account" required>
-            <option value="bank">Bank Account</option>
-            <option value="cash">Cash</option>
-          </select>
+          <select id="account" required></select>
 
           <label for="amount">Amount:</label>
-          <input type="number" id="amount" min="0" required />
+          <input
+            type="number"
+            id="amount"
+            min="0.01"
+            max="1000000000"
+            step="0.01"
+            required
+          />
+
+          <label for="transaction-date">Date:</label>
+          <input type="date" id="transaction-date" required />
 
           <label for="note">Note:</label>
-          <textarea id="note" placeholder="Type your note here..."></textarea>
+          <textarea
+            id="note"
+            maxlength="200"
+            placeholder="Type your note here..."
+          ></textarea>
 
           <button type="submit">Add Transaction</button>
+
+          <p class="form-message" role="status"></p>
         </form>
       </section>
 
       <section>
         <h2>All Transactions</h2>
 
+        <p class="table-summary" id="transaction-summary"></p>
+
         <div class="table-container">
-          <table>
+          <table id="transactions-table">
             <thead>
               <tr>
                 <th scope="col">Date</th>
@@ -141,40 +176,11 @@
                 <th scope="col">Account</th>
                 <th scope="col">Amount</th>
                 <th scope="col">Note</th>
+                <th scope="col">Action</th>
               </tr>
             </thead>
 
-            <tbody>
-              <tr>
-                <td>15 August</td>
-                <td>Grocery Shopping</td>
-                <td>Groceries</td>
-                <td>Expense</td>
-                <td>Bank Account</td>
-                <td>₹2,500</td>
-                <td>Bought groceries for the week</td>
-              </tr>
-
-              <tr>
-                <td>14 August</td>
-                <td>Salary</td>
-                <td>Salary</td>
-                <td>Income</td>
-                <td>Bank Account</td>
-                <td>₹50,000</td>
-                <td>Monthly salary credited</td>
-              </tr>
-
-              <tr>
-                <td>14 August</td>
-                <td>Electricity Bill</td>
-                <td>Bills</td>
-                <td>Expense</td>
-                <td>Bank Account</td>
-                <td>₹1,200</td>
-                <td>Paid electricity bill for August</td>
-              </tr>
-            </tbody>
+            <tbody id="transactions-body"></tbody>
           </table>
         </div>
       </section>
