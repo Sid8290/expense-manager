@@ -1,6 +1,6 @@
 # Expense Manager
 
-A simple expense manager built with plain HTML, CSS and JavaScript. All of your data is still kept in the browser's `localStorage`. A small Node.js backend now serves the app and prepares a SQLite database, but the frontend does not use that database yet (see [Current Status](#current-status)).
+A simple expense manager built with plain HTML, CSS and JavaScript. All of your data is still kept in the browser's `localStorage`. A small Node.js backend now serves the app and provides a SQLite-backed JSON API for transactions, accounts and categories, but the frontend does not use that API yet (see [Current Status](#current-status)).
 
 ## Features
 
@@ -33,18 +33,25 @@ Changing the currency only changes the symbol and number format; amounts are not
 expense-manager/
 ├── package.json            npm scripts (start, test) and the required Node.js version
 ├── backend/
-│   ├── server.js           HTTP server: static files, /api routes, startup and shutdown
+│   ├── server.js           HTTP server: static files, /api routing, JSON body reading, startup and shutdown
 │   ├── db.js               SQLite connection, schema migrations, status check
+│   ├── api/
+│   │   ├── common.js       ApiError, response helper, money conversion
+│   │   ├── validate.js     shared request validation
+│   │   ├── accounts.js     /api/accounts
+│   │   ├── categories.js   /api/categories
+│   │   └── transactions.js /api/transactions
 │   ├── data/               created at runtime; holds the SQLite file (not committed)
 │   └── test/
-│       └── server.test.js  automated tests (npm test)
+│       ├── server.test.js  Stage 1 tests: server, static files, startup, shutdown
+│       └── api.test.js     Stage 2 tests: the three APIs, constraints, migration
 ├── frontend/
 │   ├── index.html          dashboard
 │   ├── pages/              transactions, categories, accounts, analytics, settings
 │   ├── css/style.css
 │   ├── js/script.js
 │   └── assets/
-└── docs/
+└── docs/                   API.md (API reference), stage checkpoints
 ```
 
 ## Getting Started
@@ -93,7 +100,7 @@ A healthy response looks like this (values such as `uptimeSeconds` will differ):
   "data": {
     "status": "ok",
     "server": { "running": true, "uptimeSeconds": 12 },
-    "database": { "ready": true, "engine": "node:sqlite", "schemaVersion": 1, "foreignKeys": true }
+    "database": { "ready": true, "engine": "node:sqlite", "schemaVersion": 2, "foreignKeys": true }
   }
 }
 ```
@@ -106,7 +113,7 @@ If the database is not usable, `/api/health` returns HTTP 503 with `"ok": false`
 npm test
 ```
 
-The tests start the real server on a random port with a temporary database and a temporary copy of the frontend. They do not touch your real database or your browser data.
+The tests run the real server with temporary databases and, where needed, a temporary copy of the frontend. They do not touch your real database or your browser data.
 
 ### Settings
 
@@ -116,18 +123,29 @@ The tests start the real server on a random port with a temporary database and a
 | `HOST`           | `127.0.0.1`                       | Address to listen on (this computer only)|
 | `EXPENSE_DB_PATH`| `backend/data/expense-manager.db` | Where the SQLite file is stored          |
 
+## API
+
+The backend exposes `GET /api/health` plus create/read/update/delete endpoints for accounts, categories and transactions. The full reference (routes, rules, error codes and examples) is in [docs/API.md](docs/API.md). A quick check from PowerShell:
+
+```
+Invoke-RestMethod http://127.0.0.1:3000/api/accounts
+```
+
 ## Current Status
 
-This is **Stage 1: backend foundation**.
+This is **Stage 2: backend financial data APIs**.
 
-- The Node.js server serves the existing frontend and a JSON API with one endpoint, `GET /api/health`.
-- SQLite is created and kept open by the server. It contains only a small `app_meta` table. There are no transaction, account or category tables yet.
-- **The frontend still reads and writes `localStorage`.** No financial data is sent to the API, and nothing is migrated from `localStorage` to SQLite yet. That comes in later stages.
+- The Node.js server serves the existing frontend and a JSON API: health, accounts, categories and transactions.
+- SQLite holds `accounts`, `categories` and `transactions` tables (created automatically, empty at first, nothing seeded), with foreign keys and constraints.
+- **The frontend still reads and writes `localStorage`.** It does not call the API, and nothing is migrated from `localStorage` to SQLite yet. That comes in later stages, so data created through the API does not appear in the app and vice versa.
 
 ## Known Limitations
 
 - **Browser data is per address.** `localStorage` is stored separately for each origin. Data you entered earlier by opening the HTML files directly (a `file://` address), or on a different port or host name, will not appear at `http://127.0.0.1:3000`. Use one address consistently. `http://localhost:3000` and `http://127.0.0.1:3000` also count as different origins.
 - Font Awesome icons (menu and bell) load from a CDN and need an internet connection.
 - `node:sqlite` is experimental in Node.js, so its behavior may change in future Node.js releases.
+- The API has no authentication and no CORS headers, and it does not check the `Host` header. It is meant for a computer you control, bound to `127.0.0.1`.
+- Bills, to-do items and settings have no API yet; they stay in `localStorage`.
+- The API rejects amounts with more than 2 decimals and does not accept a category *name* on transactions (it uses `categoryId`), unlike today's frontend. Stage 3 has to adapt for both.
 - The server is meant for local use only: it listens on `127.0.0.1`, has no login and sends no CORS headers.
 - The shutdown tests need a Linux or macOS machine (Windows cannot send a graceful signal to a child process); they are skipped on Windows.

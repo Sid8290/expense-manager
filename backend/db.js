@@ -31,6 +31,56 @@ const MIGRATIONS = [
       INSERT INTO app_meta (key, value)
         VALUES ('created_at', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
     `
+  },
+  {
+    // Stage 2: the financial tables. They start EMPTY (nothing is seeded).
+    //
+    // Money is stored as whole minor units (paise/cents) in INTEGER columns,
+    // e.g. 12.34 is stored as 1234. Floating point cannot represent most
+    // decimals exactly, so sums of REAL columns can drift. The API converts
+    // to and from the decimal numbers the frontend uses.
+    //
+    // The CHECK constraints repeat the API's validation rules on purpose: the
+    // API gives friendly messages, the database guarantees that bad data can
+    // never be stored even if a bug lets it through.
+    version: 2,
+    sql: `
+      CREATE TABLE accounts (
+        id            TEXT PRIMARY KEY CHECK (length(id) BETWEEN 1 AND 64),
+        name          TEXT NOT NULL COLLATE NOCASE UNIQUE CHECK (length(name) BETWEEN 1 AND 40),
+        type          TEXT NOT NULL CHECK (type IN ('cash', 'bank', 'online', 'asset', 'receivable', 'payable')),
+        balance_minor INTEGER NOT NULL CHECK (balance_minor BETWEEN 0 AND 100000000000)
+      );
+
+      CREATE TABLE categories (
+        id   INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL COLLATE NOCASE CHECK (length(name) BETWEEN 1 AND 30),
+        type TEXT NOT NULL CHECK (type IN ('income', 'expense')),
+        UNIQUE (type, name),
+        -- Needed so transactions can point at (id, type) together (see below).
+        UNIQUE (id, type)
+      );
+
+      CREATE TABLE transactions (
+        id           TEXT PRIMARY KEY CHECK (length(id) BETWEEN 1 AND 64),
+        type         TEXT NOT NULL CHECK (type IN ('income', 'expense')),
+        description  TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 100),
+        category_id  INTEGER NOT NULL,
+        account_id   TEXT NOT NULL REFERENCES accounts (id) ON DELETE RESTRICT,
+        amount_minor INTEGER NOT NULL CHECK (amount_minor BETWEEN 1 AND 100000000000),
+        note         TEXT NOT NULL DEFAULT '' CHECK (length(note) <= 200),
+        date         TEXT NOT NULL CHECK (date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+        created_at   INTEGER NOT NULL CHECK (created_at >= 0),
+        -- The reference includes the type, so the database itself guarantees an
+        -- income transaction can only use an income category (and vice versa),
+        -- and that a category cannot change type while transactions use it.
+        FOREIGN KEY (category_id, type) REFERENCES categories (id, type) ON DELETE RESTRICT
+      );
+
+      CREATE INDEX idx_transactions_account  ON transactions (account_id);
+      CREATE INDEX idx_transactions_category ON transactions (category_id);
+      CREATE INDEX idx_transactions_date     ON transactions (date DESC, created_at DESC);
+    `
   }
 ];
 

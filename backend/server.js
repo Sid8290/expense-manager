@@ -14,6 +14,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 
 const db = require('./db');
+const { ApiError, ok } = require('./api/common');
 
 // Everything the static server may serve lives under this folder.
 // FRONTEND_ROOT can be overridden, which the automated tests use.
@@ -74,8 +75,10 @@ function sendJson(req, res, status, payload, extraHeaders = {}) {
   );
 }
 
-function sendApiError(req, res, status, code, message, extraHeaders = {}) {
-  sendJson(req, res, status, { ok: false, error: { code, message } }, extraHeaders);
+function sendApiError(req, res, status, code, message, extraHeaders = {}, details) {
+  const error = { code, message };
+  if (details) error.details = details;
+  sendJson(req, res, status, { ok: false, error }, extraHeaders);
 }
 
 function sendTextError(req, res, status, message, extraHeaders = {}) {
@@ -86,13 +89,22 @@ function sendTextError(req, res, status, message, extraHeaders = {}) {
 // API
 // ---------------------------------------------------------------------------
 
-// To add an endpoint in a later stage, add a path here with one handler per
-// HTTP method. Unknown paths (404) and wrong methods (405) are handled for you.
+// Maps a path to { METHOD: handler }. A ":name" segment matches any single
+// non-empty value and is passed to the handler in `params`. To add an
+// endpoint, add a path here (or in a module under backend/api/). Unknown paths
+// (404) and wrong methods (405) are handled for you.
+//
+// A handler receives { req, params, body } and returns { status, payload,
+// headers? } (see ok() in api/common.js), or throws an ApiError. It never
+// touches `res`: the code below sends the response.
 const apiRoutes = {
-  '/api/health': { GET: handleHealth }
+  '/api/health': { GET: handleHealth },
+  ...require('./api/accounts').routes,
+  ...require('./api/categories').routes,
+  ...require('./api/transactions').routes
 };
 
-function handleHealth(req, res) {
+function handleHealth() {
   const database = db.getStatus();
   const data = {
     status: database.ready ? 'ok' : 'degraded',
@@ -101,30 +113,138 @@ function handleHealth(req, res) {
   };
 
   if (database.ready) {
-    return sendJson(req, res, 200, { ok: true, data });
+    return ok(data);
   }
-  sendJson(req, res, 503, {
-    ok: false,
-    data,
-    error: { code: 'DATABASE_NOT_READY', message: 'The database is not ready.' }
+  return {
+    status: 503,
+    payload: {
+      ok: false,
+      data,
+      error: { code: 'DATABASE_NOT_READY', message: 'The database is not ready.' }
+    }
+  };
+}
+
+// Finds the route for a path like "/api/accounts/acc-1" and extracts params.
+function findRoute(pathname) {
+  const parts = pathname.split('/');
+
+  for (const [pattern, methods] of Object.entries(apiRoutes)) {
+    const patternParts = pattern.split('/');
+    if (patternParts.length !== parts.length) continue;
+
+    const params = {};
+    const matches = patternParts.every((expected, index) => {
+      const actual = parts[index];
+      if (!expected.startsWith(':')) return expected === actual;
+      if (actual === '') return false;
+      try {
+        params[expected.slice(1)] = decodeURIComponent(actual);
+      } catch (error) {
+        throw new ApiError(400, 'INVALID_ID', 'The URL contains an invalid escape sequence.');
+      }
+      return true;
+    });
+
+    if (matches) return { methods, params };
+  }
+  return null;
+}
+
+// Methods whose body we read. For every other method the body is ignored.
+const BODY_METHODS = ['POST', 'PUT'];
+const MAX_BODY_BYTES = 64 * 1024; // far more than any record here needs
+
+// Reads and parses a JSON request body. Rejects with an ApiError when the
+// content type is wrong, the body is too big, or it is not a JSON object.
+function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    // Requiring application/json also means a web page on another site cannot
+    // make the browser send us a "simple" cross-site request (it would need a
+    // CORS preflight, which this server never approves).
+    const contentType = (req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+    if (contentType !== 'application/json') {
+      req.resume();
+      return reject(new ApiError(415, 'UNSUPPORTED_MEDIA_TYPE', 'Send the body as application/json.'));
+    }
+
+    const declared = Number(req.headers['content-length']);
+    let tooLarge = Number.isFinite(declared) && declared > MAX_BODY_BYTES;
+    const chunks = [];
+    let size = 0;
+
+    req.on('data', chunk => {
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) tooLarge = true;
+      if (!tooLarge) chunks.push(chunk); // once too large, just drain and discard
+    });
+    req.on('error', () => reject(new ApiError(400, 'BAD_REQUEST', 'The request could not be read.')));
+    req.on('end', () => {
+      if (tooLarge) {
+        return reject(new ApiError(413, 'PAYLOAD_TOO_LARGE', `The request body must be at most ${MAX_BODY_BYTES} bytes.`));
+      }
+      const text = Buffer.concat(chunks).toString('utf8');
+      if (text.trim() === '') {
+        return reject(new ApiError(400, 'INVALID_JSON', 'The request body is empty.'));
+      }
+      let parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch (error) {
+        return reject(new ApiError(400, 'INVALID_JSON', 'The request body is not valid JSON.'));
+      }
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return reject(new ApiError(400, 'INVALID_BODY', 'The request body must be a JSON object.'));
+      }
+      resolve(parsed);
+    });
   });
 }
 
-function handleApi(req, res, pathname) {
-  if (!Object.hasOwn(apiRoutes, pathname)) {
-    return sendApiError(req, res, 404, 'NOT_FOUND', 'No such API endpoint.');
+// Safety net: if a database constraint rejects something the handler's own
+// checks did not catch, answer with a clean 4xx instead of a 500. The handlers
+// check first, so reaching this means a bug or a race, not normal use.
+function translateDatabaseError(error) {
+  if (error.code !== 'ERR_SQLITE_ERROR' || !/constraint/i.test(error.errstr || error.message)) return null;
+  const detail = error.message || '';
+  if (/UNIQUE|PRIMARY KEY/i.test(detail)) return new ApiError(409, 'CONFLICT', 'That value already exists.');
+  if (/FOREIGN KEY/i.test(detail)) {
+    return new ApiError(409, 'CONSTRAINT_VIOLATION', 'The record is linked to other records.');
   }
+  return new ApiError(400, 'VALIDATION_ERROR', 'The request contains invalid data.');
+}
 
-  const route = apiRoutes[pathname];
-  const method = req.method === 'HEAD' ? 'GET' : req.method; // HEAD behaves like GET
+async function handleApi(req, res, pathname) {
+  try {
+    const route = findRoute(pathname);
+    if (!route) {
+      return sendApiError(req, res, 404, 'NOT_FOUND', 'No such API endpoint.');
+    }
 
-  if (!Object.hasOwn(route, method)) {
-    return sendApiError(req, res, 405, 'METHOD_NOT_ALLOWED', 'This method is not supported for this endpoint.', {
-      Allow: Object.keys(route).join(', ')
-    });
+    const method = req.method === 'HEAD' ? 'GET' : req.method; // HEAD behaves like GET
+
+    if (!Object.hasOwn(route.methods, method)) {
+      return sendApiError(req, res, 405, 'METHOD_NOT_ALLOWED', 'This method is not supported for this endpoint.', {
+        Allow: Object.keys(route.methods).join(', ')
+      });
+    }
+
+    const body = BODY_METHODS.includes(method) ? await readJsonBody(req) : undefined;
+
+    let result;
+    try {
+      result = await route.methods[method]({ req, params: route.params, body });
+    } catch (error) {
+      throw translateDatabaseError(error) || error;
+    }
+    sendJson(req, res, result.status, result.payload, result.headers);
+  } catch (error) {
+    if (!(error instanceof ApiError)) throw error; // unexpected: becomes a generic 500
+    sendApiError(req, res, error.status, error.code, error.message, {}, error.details);
+  } finally {
+    // Whatever happened, make sure an unread request body is drained.
+    req.resume();
   }
-
-  return route[method](req, res);
 }
 
 // ---------------------------------------------------------------------------
@@ -215,22 +335,24 @@ async function handleStatic(req, res, pathname) {
 
 function createServer() {
   return http.createServer(async (req, res) => {
-    // Stage 1 never reads request bodies. Later stages that accept JSON will
-    // read the body here instead of discarding it.
-    req.resume();
-
     res.on('finish', () => console.log(`${req.method} ${req.url} -> ${res.statusCode}`));
 
     // Take the path part of the URL by hand. We avoid `new URL()` because it
     // treats a request like "//host/x" as a different host.
     const rawPath = (req.url || '').split('?')[0].split('#')[0];
+    const isApi = rawPath === '/api' || rawPath.startsWith('/api/');
+
+    // API handlers read the request body themselves (see readJsonBody).
+    // Everything else ignores it, so we just discard it.
+    if (!isApi) req.resume();
+
     if (!rawPath.startsWith('/')) {
       return sendTextError(req, res, 400, 'Bad Request');
     }
 
     try {
-      if (rawPath === '/api' || rawPath.startsWith('/api/')) {
-        return handleApi(req, res, rawPath);
+      if (isApi) {
+        return await handleApi(req, res, rawPath);
       }
       return await handleStatic(req, res, rawPath);
     } catch (error) {
@@ -238,7 +360,7 @@ function createServer() {
       console.error('Unhandled error while handling request:', error);
       if (res.headersSent) {
         res.destroy();
-      } else if (rawPath === '/api' || rawPath.startsWith('/api/')) {
+      } else if (isApi) {
         sendApiError(req, res, 500, 'INTERNAL_ERROR', 'Something went wrong on the server.');
       } else {
         sendTextError(req, res, 500, 'Internal Server Error');

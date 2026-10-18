@@ -1,6 +1,7 @@
 'use strict';
 
-// Automated checks for Stage 1. Run with:  npm test
+// Automated checks for Stage 1 (server, static files, database startup).
+// The Stage 2 API tests are in api.test.js. Run everything with:  npm test
 //
 // Each test that needs a server starts the REAL backend/server.js as a child
 // process on a random free port (PORT=0), pointed at:
@@ -334,7 +335,8 @@ describe('running server', () => {
     });
 
     test('POST to an unknown API route is 404, not 405', async () => {
-      const response = await request(server.port, 'POST', '/api/transactions');
+      // (/api/transactions used to be the example here, but it exists since Stage 2.)
+      const response = await request(server.port, 'POST', '/api/budgets');
       assert.equal(response.status, 404);
     });
   });
@@ -485,8 +487,12 @@ describe('db module', () => {
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
         .all()
         .map(row => row.name);
-      assert.deepEqual(tables, ['app_meta']);
+      // Stage 2 added the three financial tables. They must start empty.
+      assert.deepEqual(tables.sort(), ['accounts', 'app_meta', 'categories', 'transactions']);
       assert.equal(connection.prepare('SELECT COUNT(*) AS n FROM app_meta').get().n, 1);
+      for (const table of ['accounts', 'categories', 'transactions']) {
+        assert.equal(connection.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0, `${table} is empty`);
+      }
     } finally {
       db.closeDatabase();
     }
@@ -564,7 +570,7 @@ describe('persistence', () => {
 
     assert.equal(health.data.database.ready, true);
     assert.equal(after.createdAt, before.createdAt);
-    assert.equal(after.version, 1);
+    assert.equal(after.version, require('../db').LATEST_VERSION);
     assert.equal(after.rows, 1);
   });
 });
