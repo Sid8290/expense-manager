@@ -1,6 +1,6 @@
 # Expense Manager
 
-A simple, browser-based expense manager built with plain HTML, CSS and JavaScript. It runs entirely in the browser and keeps all data in `localStorage`, so there is no backend, database or build step.
+A simple expense manager built with plain HTML, CSS and JavaScript. All of your data is still kept in the browser's `localStorage`. A small Node.js backend now serves the app and prepares a SQLite database, but the frontend does not use that database yet (see [Current Status](#current-status)).
 
 ## Features
 
@@ -24,5 +24,110 @@ Changing the currency only changes the symbol and number format; amounts are not
 - Vanilla JavaScript
 - Browser `localStorage`
 - Font Awesome (loaded from a CDN)
+- Node.js (built-in `http` module, no web framework)
+- SQLite through Node's built-in `node:sqlite` module (no npm packages)
 
 ## Project Structure
+
+```
+expense-manager/
+├── package.json            npm scripts (start, test) and the required Node.js version
+├── backend/
+│   ├── server.js           HTTP server: static files, /api routes, startup and shutdown
+│   ├── db.js               SQLite connection, schema migrations, status check
+│   ├── data/               created at runtime; holds the SQLite file (not committed)
+│   └── test/
+│       └── server.test.js  automated tests (npm test)
+├── frontend/
+│   ├── index.html          dashboard
+│   ├── pages/              transactions, categories, accounts, analytics, settings
+│   ├── css/style.css
+│   ├── js/script.js
+│   └── assets/
+└── docs/
+```
+
+## Getting Started
+
+### Prerequisites
+
+- **Node.js 22.13.0 or newer.** Older 22.x versions do not enable `node:sqlite` without an extra flag. Check yours with `node --version`. This project was developed and tested on Node.js 22.22.0.
+- No `npm install` is needed: there are no dependencies.
+
+### Start the app (Windows PowerShell or Command Prompt)
+
+```
+cd path\to\expense-manager
+npm start
+```
+
+Then open the dashboard at **http://127.0.0.1:3000**. Stop the server with `Ctrl+C`.
+
+To use another port:
+
+```
+# PowerShell
+$env:PORT = 4000; npm start
+
+# Command Prompt
+set PORT=4000 && npm start
+```
+
+Node.js prints an `ExperimentalWarning: SQLite is an experimental feature` message on startup. This is expected: `node:sqlite` is still marked experimental by Node.js.
+
+### Check that the backend is healthy
+
+```
+# PowerShell
+Invoke-RestMethod http://127.0.0.1:3000/api/health
+
+# Command Prompt (curl.exe ships with Windows 10 and later)
+curl.exe http://127.0.0.1:3000/api/health
+```
+
+A healthy response looks like this (values such as `uptimeSeconds` will differ):
+
+```json
+{
+  "ok": true,
+  "data": {
+    "status": "ok",
+    "server": { "running": true, "uptimeSeconds": 12 },
+    "database": { "ready": true, "engine": "node:sqlite", "schemaVersion": 1, "foreignKeys": true }
+  }
+}
+```
+
+If the database is not usable, `/api/health` returns HTTP 503 with `"ok": false`. If the database cannot be opened at startup, the server prints the reason and exits instead of running.
+
+### Run the automated tests
+
+```
+npm test
+```
+
+The tests start the real server on a random port with a temporary database and a temporary copy of the frontend. They do not touch your real database or your browser data.
+
+### Settings
+
+| Variable         | Default                           | Meaning                                  |
+| ---------------- | --------------------------------- | ---------------------------------------- |
+| `PORT`           | `3000`                            | Port to listen on (`0` = any free port)  |
+| `HOST`           | `127.0.0.1`                       | Address to listen on (this computer only)|
+| `EXPENSE_DB_PATH`| `backend/data/expense-manager.db` | Where the SQLite file is stored          |
+
+## Current Status
+
+This is **Stage 1: backend foundation**.
+
+- The Node.js server serves the existing frontend and a JSON API with one endpoint, `GET /api/health`.
+- SQLite is created and kept open by the server. It contains only a small `app_meta` table. There are no transaction, account or category tables yet.
+- **The frontend still reads and writes `localStorage`.** No financial data is sent to the API, and nothing is migrated from `localStorage` to SQLite yet. That comes in later stages.
+
+## Known Limitations
+
+- **Browser data is per address.** `localStorage` is stored separately for each origin. Data you entered earlier by opening the HTML files directly (a `file://` address), or on a different port or host name, will not appear at `http://127.0.0.1:3000`. Use one address consistently. `http://localhost:3000` and `http://127.0.0.1:3000` also count as different origins.
+- Font Awesome icons (menu and bell) load from a CDN and need an internet connection.
+- `node:sqlite` is experimental in Node.js, so its behavior may change in future Node.js releases.
+- The server is meant for local use only: it listens on `127.0.0.1`, has no login and sends no CORS headers.
+- The shutdown tests need a Linux or macOS machine (Windows cannot send a graceful signal to a child process); they are skipped on Windows.

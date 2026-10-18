@@ -12,3 +12,24 @@ node_modules/
 .env
 .env.*
 !.env.example
+
+
+# Dependencies
+node_modules/
+
+# SQLite runtime data (never commit the database)
+backend/data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment files / secrets
+.env
+.env.*

@@ -1,0 +1,14 @@
+{
+  "name": "expense-manager",
+  "version": "1.0.0",
+  "description": "Expense Manager: vanilla HTML/CSS/JS frontend served by a Node.js backend with SQLite.",
+  "private": true,
+  "main": "backend/server.js",
+  "scripts": {
+    "start": "node backend/server.js",
+    "test": "node --test \"backend/test/**/*.test.js\""
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  }
+}
