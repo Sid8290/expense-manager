@@ -85,7 +85,7 @@ const PAGE_DATA = {
   accounts: ['accounts', 'transactions'],
   categories: ['categories', 'transactions'],
   analytics: ['transactions'],
-  settings: ['transactions'] // only for the monthly summary in the notification bell
+  settings: ['accounts', 'categories', 'transactions'] // counts for the migration panel, and the bell's monthly summary
 };
 
 const store = { accounts: [], categories: [], transactions: [] };
@@ -1509,6 +1509,8 @@ function initSettings() {
     showFormMessage(preferencesForm, 'Preferences saved.', false);
   });
 
+  initMigrationPanel();
+
   // Resets only what is stored in this browser for non-financial features.
   // Transactions, accounts and categories live in the database and are not
   // touched (and the old financial localStorage keys are never removed).
@@ -1653,33 +1655,184 @@ function clearBanner(id) {
   }
 }
 
-// Counts the financial records the OLD version left in this browser. It only
-// reads. The old app wrote its default accounts and categories into
-// localStorage on first use, so those, when untouched, are not counted.
-function getLegacyFinancialSummary() {
-  const read = (key, isValid) => {
-    const data = readStorage(key, null);
-    return Array.isArray(data) ? data.filter(isValid) : [];
-  };
+// ---------------------------------------------------------------------------
+// Old browser data (read only) and moving it into the database
+//
+// The previous version of the app kept transactions, accounts and categories in
+// localStorage. Everything in this section only READS those keys. Nothing here
+// ever writes, changes or removes them, not even after a successful import.
+// ---------------------------------------------------------------------------
 
-  const isDefaultAccount = account => DEFAULT_ACCOUNTS.some(item => {
-    return item.id === account.id && item.name === account.name
-      && item.type === account.type && item.balance === account.balance;
+const LEGACY_BACKUP_FORMAT = 'expense-manager-legacy-backup';
+const LEGACY_BACKUP_VERSION = 1;
+
+// An account or category that is exactly one of the defaults the old version
+// wrote on its first run is not something the user created.
+function isDefaultLegacyAccount(account) {
+  return DEFAULT_ACCOUNTS.some(item => item.id === account.id && item.name === account.name
+    && item.type === account.type && item.balance === account.balance);
+}
+
+function isDefaultLegacyCategory(category) {
+  return DEFAULT_CATEGORIES.some(item => item.name === category.name && item.type === category.type);
+}
+
+const LEGACY_ENTITIES = [
+  { name: 'accounts', key: STORAGE_KEYS.accounts, label: 'Accounts', one: 'Account', isValid: isValidAccount, isDefault: isDefaultLegacyAccount },
+  { name: 'categories', key: STORAGE_KEYS.categories, label: 'Categories', one: 'Category', isValid: isValidCategory, isDefault: isDefaultLegacyCategory },
+  { name: 'transactions', key: STORAGE_KEYS.transactions, label: 'Transactions', one: 'Transaction', isValid: isValidTransaction, isDefault: () => false }
+];
+
+// Reads the three old keys exactly as stored. A value that cannot be read, is
+// not valid JSON, or is not a list is reported in `problems` (and its raw text
+// kept in `unreadable`) instead of being silently treated as "no records".
+function readLegacyStorage() {
+  const result = { records: { accounts: [], categories: [], transactions: [] }, problems: [], unreadable: {} };
+
+  LEGACY_ENTITIES.forEach(entity => {
+    let raw;
+
+    try {
+      raw = localStorage.getItem(entity.key);
+    } catch (error) {
+      result.problems.push({ key: entity.key, kind: 'inaccessible', message: 'Browser storage could not be read.' });
+      return;
+    }
+
+    if (raw === null) {
+      return;
+    }
+
+    let parsed;
+
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      result.problems.push({ key: entity.key, kind: 'unreadable', message: 'The stored text is not valid JSON.' });
+      result.unreadable[entity.key] = raw;
+      return;
+    }
+
+    if (!Array.isArray(parsed)) {
+      result.problems.push({ key: entity.key, kind: 'not-a-list', message: 'The stored value is not a list of records.' });
+      result.unreadable[entity.key] = raw;
+      return;
+    }
+
+    result.records[entity.name] = parsed;
   });
-  const isDefaultCategory = category => DEFAULT_CATEGORIES.some(item => {
-    return item.name === category.name && item.type === category.type;
+
+  return result;
+}
+
+// What is in the old keys, per type: how many records are stored, how many are
+// unchanged defaults, how many are malformed and how many are real user records.
+function reviewLegacyData() {
+  const legacy = readLegacyStorage();
+  const entities = {};
+
+  LEGACY_ENTITIES.forEach(entity => {
+    const stored = legacy.records[entity.name];
+    const valid = stored.filter(entity.isValid);
+    const defaults = valid.filter(entity.isDefault).length;
+
+    entities[entity.name] = {
+      stored: stored.length,
+      malformed: stored.length - valid.length,
+      defaults,
+      userRecords: valid.length - defaults
+    };
   });
+
+  return { entities, problems: legacy.problems };
+}
+
+// Counts the financial records the OLD version left in this browser (read-only).
+function getLegacyFinancialSummary() {
+  const { entities } = reviewLegacyData();
 
   return {
-    transactions: read(STORAGE_KEYS.transactions, isValidTransaction).length,
-    accounts: read(STORAGE_KEYS.accounts, isValidAccount).filter(item => !isDefaultAccount(item)).length,
-    categories: read(STORAGE_KEYS.categories, isValidCategory).filter(item => !isDefaultCategory(item)).length
+    transactions: entities.transactions.userRecords,
+    accounts: entities.accounts.userRecords,
+    categories: entities.categories.userRecords
   };
+}
+
+// The backup document. It contains the old records exactly as they are stored
+// (unknown fields and malformed entries included) plus a note of anything that
+// could not be read. The same document is what the import preview and the
+// import send to the server. See docs/API.md for the format.
+function buildLegacyBackup() {
+  const legacy = readLegacyStorage();
+  const backup = {
+    format: LEGACY_BACKUP_FORMAT,
+    version: LEGACY_BACKUP_VERSION,
+    exportedAt: new Date().toISOString(),
+    source: {
+      app: 'Expense Manager (browser-only version)',
+      origin: typeof location !== 'undefined' ? location.origin : undefined,
+      storageKeys: LEGACY_ENTITIES.map(entity => entity.key)
+    },
+    complete: legacy.problems.length === 0,
+    problems: legacy.problems,
+    data: legacy.records
+  };
+
+  if (Object.keys(legacy.unreadable).length > 0) {
+    backup.unreadable = legacy.unreadable;
+  }
+
+  return backup;
+}
+
+// Saves a JSON document through the browser's own download. The data never
+// leaves the computer. The file name only contains letters, digits and dashes.
+function downloadJson(baseName, document_) {
+  const blob = new Blob([JSON.stringify(document_, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+
+  link.href = url;
+  link.download = `${baseName}-${todayISO()}.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// Adds up the per-type counts of an import report.
+function importTotals(report) {
+  const totals = { toImport: 0, alreadyThere: 0, blocked: 0 };
+
+  LEGACY_ENTITIES.forEach(entity => {
+    const counts = report.counts[entity.name];
+
+    totals.toImport += counts.imported;
+    totals.alreadyThere += counts.duplicateInDatabase;
+    totals.blocked += counts.rejected + counts.unresolvedReferences;
+  });
+
+  return totals;
 }
 
 const LEGACY_NOTICE_DISMISSED = 'em_legacy_notice_dismissed'; // sessionStorage, this tab only
 
-function renderLegacyNotice() {
+function legacyFoundText(summary) {
+  const parts = [];
+
+  if (summary.transactions > 0) parts.push(pluralize(summary.transactions, 'transaction'));
+  if (summary.accounts > 0) parts.push(pluralize(summary.accounts, 'account'));
+  if (summary.categories > 0) parts.push(summary.categories === 1 ? '1 category' : `${summary.categories} categories`);
+
+  return parts.join(', ');
+}
+
+// The yellow/blue notice at the top of every page while old records remain in
+// this browser. It first shows what was found, then asks the server (a preview,
+// which changes nothing) how those records compare with the database, so the
+// wording stays true after an import: the browser copies are never removed, so
+// the notice stays, but it says whether they still need importing.
+async function renderLegacyNotice() {
   try {
     if (sessionStorage.getItem(LEGACY_NOTICE_DISMISSED) === '1') {
       return;
@@ -1688,37 +1841,454 @@ function renderLegacyNotice() {
     // sessionStorage unavailable: show the notice every time.
   }
 
-  const summary = getLegacyFinancialSummary();
-  const parts = [];
+  const found = legacyFoundText(getLegacyFinancialSummary());
 
-  if (summary.transactions > 0) parts.push(pluralize(summary.transactions, 'transaction'));
-  if (summary.accounts > 0) parts.push(pluralize(summary.accounts, 'account'));
-  if (summary.categories > 0) parts.push(summary.categories === 1 ? '1 category' : `${summary.categories} categories`);
-
-  if (parts.length === 0) {
+  if (!found) {
     return;
   }
 
-  setBanner(
-    'legacy-data',
-    'This browser still holds financial data from the previous version of the app that is not in the database yet: '
-      + parts.join(', ')
-      + '. It has not been changed or deleted. Importing it is planned for a later update, so until then it will not appear in the app.',
-    {
-      kind: 'warning',
-      actions: [{
-        label: 'Dismiss',
-        onClick: () => {
-          try {
-            sessionStorage.setItem(LEGACY_NOTICE_DISMISSED, '1');
-          } catch (error) {
-            // Nothing to remember it with; just hide it now.
-          }
-          clearBanner('legacy-data');
-        }
-      }]
+  const dismiss = {
+    label: 'Dismiss',
+    onClick: () => {
+      try {
+        sessionStorage.setItem(LEGACY_NOTICE_DISMISSED, '1');
+      } catch (error) {
+        // Nothing to remember it with; just hide it now.
+      }
+      clearBanner('legacy-data');
     }
-  );
+  };
+  const review = {
+    label: 'Review',
+    onClick: () => { location.href = pageUrl('settings.html') + '#data-migration'; }
+  };
+  const intro = 'This browser still holds financial data from the previous version of the app: ' + found + '. ';
+  const unchanged = 'The copies in this browser have not been changed or deleted.';
+
+  setBanner('legacy-data', intro + unchanged + ' Checking them against the database...', { kind: 'warning', actions: [dismiss] });
+
+  let totals = null;
+
+  try {
+    totals = importTotals(await Api.previewImport(buildLegacyBackup()));
+  } catch (error) {
+    totals = null; // the generic message below is still true
+  }
+
+  if (!document.querySelector('.status-banners [data-banner="legacy-data"]')) {
+    return; // dismissed while the check was running
+  }
+
+  if (totals === null) {
+    setBanner('legacy-data', intro + unchanged + ' Open Settings to review them and move them into the database.', { kind: 'warning', actions: [review, dismiss] });
+  } else if (totals.toImport > 0) {
+    setBanner('legacy-data', intro + pluralize(totals.toImport, 'record') + ' of them are not in the database yet, so they do not appear in the app. ' + unchanged, { kind: 'warning', actions: [review, dismiss] });
+  } else if (totals.blocked > 0) {
+    setBanner('legacy-data', intro + 'Everything that can be imported is already in the database, but ' + pluralize(totals.blocked, 'record') + ' cannot be imported (see Settings for the reasons). ' + unchanged, { kind: 'warning', actions: [review, dismiss] });
+  } else {
+    setBanner('legacy-data', intro + 'All of them are already in the database. ' + unchanged + ' This notice stays while they remain in this browser.', { kind: 'info', actions: [dismiss] });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Settings: "Move Data From the Old Version"
+// Review -> backup -> preview -> explicit confirmation -> import -> report.
+// ---------------------------------------------------------------------------
+
+const migration = { dataReady: false, busy: false };
+
+function makeElement(tag, text, className) {
+  const element = document.createElement(tag);
+
+  if (text !== undefined) element.textContent = text;
+  if (className) element.className = className;
+
+  return element;
+}
+
+function migrationMessage(text, isError) {
+  const panel = document.getElementById('migration-panel');
+
+  if (panel) {
+    showFormMessage(panel, text, isError);
+  }
+}
+
+// Runs one action at a time; every button in the panel is disabled meanwhile.
+async function runMigrationTask(task) {
+  const panel = document.getElementById('migration-panel');
+
+  if (migration.busy || !panel) {
+    return;
+  }
+
+  migration.busy = true;
+  panel.querySelectorAll('button, input').forEach(control => { control.disabled = true; });
+
+  try {
+    await task();
+  } finally {
+    migration.busy = false;
+    panel.querySelectorAll('button, input').forEach(control => { control.disabled = false; });
+    updateMigrationControls();
+  }
+}
+
+function legacyHasRecords() {
+  const summary = getLegacyFinancialSummary();
+  return summary.transactions + summary.accounts + summary.categories > 0;
+}
+
+// Enables only what makes sense right now.
+function updateMigrationControls() {
+  const previewButton = document.getElementById('migration-preview-button');
+  const databaseButton = document.getElementById('export-database');
+  const confirmBox = document.getElementById('migration-confirm');
+  const runButton = document.getElementById('migration-run');
+
+  if (!previewButton || migration.busy) {
+    return;
+  }
+
+  previewButton.disabled = !migration.dataReady || !legacyHasRecords();
+  databaseButton.disabled = !migration.dataReady;
+
+  if (runButton) {
+    runButton.disabled = !(confirmBox && confirmBox.checked);
+  }
+}
+
+function renderMigrationPanel() {
+  const area = document.getElementById('migration-review');
+
+  if (!area) {
+    return;
+  }
+
+  const review = reviewLegacyData();
+  const cards = makeElement('div', undefined, 'card-container');
+
+  LEGACY_ENTITIES.forEach(entity => {
+    const info = review.entities[entity.name];
+    const card = makeElement('div', undefined, 'card');
+
+    card.appendChild(makeElement('h3', entity.label));
+    card.appendChild(makeElement('p', String(info.userRecords), 'migration-count'));
+    card.appendChild(makeElement('p', 'found in this browser'));
+    card.appendChild(makeElement('p', migration.dataReady ? `In the database: ${store[entity.name].length}` : 'In the database: not available'));
+
+    if (info.defaults > 0) {
+      card.appendChild(makeElement('p', `${info.defaults} unchanged default${info.defaults === 1 ? '' : 's'} of the old version (not counted)`));
+    }
+    if (info.malformed > 0) {
+      card.appendChild(makeElement('p', `${info.malformed} malformed (cannot be imported)`, 'migration-warning'));
+    }
+
+    cards.appendChild(card);
+  });
+
+  area.textContent = '';
+  area.appendChild(cards);
+
+  review.problems.forEach(problem => {
+    area.appendChild(makeElement('p', `${problem.key}: ${problem.message} It is kept in the backup file but cannot be imported.`, 'migration-warning'));
+  });
+
+  const found = legacyFoundText(getLegacyFinancialSummary());
+
+  area.appendChild(makeElement(
+    'p',
+    found
+      ? 'These records are still only in this browser\'s storage. They are not part of the database until you import them.'
+      : 'No financial records from the old version were found in this browser.'
+  ));
+
+  if (!migration.dataReady) {
+    area.appendChild(makeElement('p', 'The database could not be reached, so importing and the database export are unavailable. Use "Try again" above.', 'migration-warning'));
+  }
+
+  updateMigrationControls();
+}
+
+function counted(value) {
+  return String(value);
+}
+
+// One row per record type. `mode` is 'preview' or 'import'.
+function renderCountsTable(report, mode) {
+  const wrapper = makeElement('div', undefined, 'table-container');
+  const table = document.createElement('table');
+  const head = document.createElement('tr');
+
+  ['Records', 'Found', mode === 'import' ? 'Imported' : 'Will be imported', 'Already in database', 'Repeated in backup', 'Old defaults skipped', 'Rejected', 'Unresolved'].forEach(title => {
+    const cell = makeElement('th', title);
+    cell.scope = 'col';
+    head.appendChild(cell);
+  });
+
+  const thead = document.createElement('thead');
+  thead.appendChild(head);
+  table.appendChild(thead);
+
+  const body = document.createElement('tbody');
+
+  LEGACY_ENTITIES.forEach(entity => {
+    const counts = report.counts[entity.name];
+    const row = document.createElement('tr');
+
+    [entity.label, counts.received, counts.imported, counts.duplicateInDatabase, counts.duplicateInFile, counts.oldDefaultNotImported, counts.rejected, counts.unresolvedReferences]
+      .forEach(value => row.appendChild(makeElement('td', counted(value))));
+    body.appendChild(row);
+  });
+
+  table.appendChild(body);
+  wrapper.appendChild(table);
+  return wrapper;
+}
+
+// The records the server refused, with its reason for each.
+function renderProblemList(report) {
+  const problems = [];
+
+  LEGACY_ENTITIES.forEach(entity => {
+    report.items[entity.name]
+      .filter(item => item.outcome === 'rejected' || item.outcome === 'unresolved-reference')
+      .forEach(item => {
+        const name = item.label || item.id || `#${item.index + 1}`;
+        problems.push(`${entity.one} "${name}": ${item.reason}`);
+      });
+  });
+
+  if (problems.length === 0) {
+    return null;
+  }
+
+  const wrapper = makeElement('div');
+  const list = makeElement('ul', undefined, 'migration-problems');
+
+  wrapper.appendChild(makeElement('h4', `Records that cannot be imported (${problems.length})`));
+  problems.slice(0, 50).forEach(text => list.appendChild(makeElement('li', text)));
+  wrapper.appendChild(list);
+
+  if (problems.length > 50) {
+    wrapper.appendChild(makeElement('p', `Only the first 50 are listed here; the table above has the full counts.`));
+  }
+  if (report.items.transactionsTruncated) {
+    wrapper.appendChild(makeElement('p', 'The server lists at most 200 transaction results; the counts are complete.'));
+  }
+
+  return wrapper;
+}
+
+function renderMigrationPreview(report) {
+  const area = document.getElementById('migration-preview');
+  const totals = importTotals(report);
+
+  document.getElementById('migration-report').hidden = true;
+  area.textContent = '';
+  area.hidden = false;
+
+  area.appendChild(makeElement('h3', 'Import preview'));
+  area.appendChild(makeElement('p', 'Nothing has been changed yet. This is what an import would do right now, checked against the current database.'));
+  area.appendChild(renderCountsTable(report, 'preview'));
+
+  const problems = renderProblemList(report);
+
+  if (problems) {
+    area.appendChild(problems);
+  }
+
+  if (totals.toImport === 0) {
+    area.appendChild(makeElement('p', totals.blocked > 0
+      ? 'There is nothing new that can be imported. Fix the problems above (for example rename a clashing account) and preview again.'
+      : 'There is nothing new to import: everything is already in the database.'));
+    return;
+  }
+
+  const confirmBox = makeElement('div', undefined, 'migration-confirm');
+  const statements = makeElement('ul');
+
+  [
+    `${pluralize(totals.toImport, 'record')} will be copied into the database.`,
+    'Existing database records will not be overwritten.',
+    'The records in this browser stay where they are, unchanged.',
+    'Duplicates are skipped and invalid records are rejected; both are listed in the report.',
+    'The import is all-or-nothing: if something unexpected fails, nothing is saved.',
+    'Keep your backup file until you have checked the result.'
+  ].forEach(text => statements.appendChild(makeElement('li', text)));
+  confirmBox.appendChild(statements);
+
+  const label = makeElement('label');
+  const checkbox = document.createElement('input');
+
+  checkbox.type = 'checkbox';
+  checkbox.id = 'migration-confirm';
+  checkbox.addEventListener('change', updateMigrationControls);
+  label.appendChild(checkbox);
+  label.appendChild(document.createTextNode(` I have read this and want to import ${pluralize(totals.toImport, 'record')}.`));
+  confirmBox.appendChild(label);
+
+  const run = makeElement('button', 'Import Now');
+
+  run.type = 'button';
+  run.id = 'migration-run';
+  run.disabled = true;
+  run.addEventListener('click', runLegacyImport);
+  confirmBox.appendChild(run);
+
+  area.appendChild(confirmBox);
+}
+
+function renderMigrationReport(report, recheck) {
+  const area = document.getElementById('migration-report');
+  const totals = importTotals(report);
+  const before = report.databaseBefore;
+  const after = report.databaseAfter;
+
+  document.getElementById('migration-preview').hidden = true;
+  area.textContent = '';
+  area.hidden = false;
+
+  area.appendChild(makeElement('h3', report.complete ? 'Import complete' : 'Import finished partially'));
+  area.appendChild(makeElement('p', report.complete
+    ? (totals.toImport > 0
+      ? `${pluralize(totals.toImport, 'record')} were saved to the database. Every other record was already there or was an unused default of the old version.`
+      : 'Nothing new was imported: everything was already in the database.')
+    : `${pluralize(totals.toImport, 'record')} were saved. ${pluralize(totals.blocked, 'record')} could not be imported and were left out (listed below). Nothing else was changed.`));
+  area.appendChild(renderCountsTable(report, 'import'));
+
+  const problems = renderProblemList(report);
+
+  if (problems) {
+    area.appendChild(problems);
+  }
+
+  area.appendChild(makeElement('h4', 'Verification'));
+
+  const checks = makeElement('ul');
+
+  checks.appendChild(makeElement('li', `Database before: ${before.accounts} accounts, ${before.categories} categories, ${before.transactions} transactions. After: ${after.accounts} accounts, ${after.categories} categories, ${after.transactions} transactions.`));
+  checks.appendChild(makeElement('li', `Read-back check: ${report.verification.recordsMatching} of ${report.verification.recordsChecked} saved records were read back from the database and matched what was sent.`));
+  checks.appendChild(makeElement('li', recheck
+    ? `Fresh check of the old records against the database: ${recheck.toImport} still to import, ${recheck.alreadyThere} already in the database, ${recheck.blocked} cannot be imported.`
+    : 'The fresh check of the old records against the database could not be run. Use "Preview Import" to run it.'));
+  checks.appendChild(makeElement('li', 'The records in this browser were not changed or deleted.'));
+  area.appendChild(checks);
+  area.appendChild(makeElement('p', 'Keep your backup until you have compared the numbers above with the Dashboard, Accounts and Transactions pages.'));
+}
+
+async function runLegacyBackupDownload() {
+  try {
+    const backup = buildLegacyBackup();
+
+    downloadJson('expense-manager-legacy-backup', backup);
+
+    const total = LEGACY_ENTITIES.reduce((sum, entity) => sum + backup.data[entity.name].length, 0);
+
+    if (!backup.complete) {
+      migrationMessage('Backup downloaded, but it is NOT complete: some stored values could not be read as lists (see the notes above). Their raw text is included in the file.', true);
+    } else {
+      migrationMessage(total === 0
+        ? 'Backup downloaded. This browser holds no old records, so the file has empty lists.'
+        : `Backup downloaded (${pluralize(total, 'record')}, kept exactly as stored). This file is a backup only; it cannot be imported back into the app.`, false);
+    }
+  } catch (error) {
+    console.error(error);
+    migrationMessage('The backup could not be created. Nothing was changed.', true);
+  }
+}
+
+async function runDatabaseExport() {
+  await runMigrationTask(async () => {
+    try {
+      const exported = await Api.exportDatabase();
+
+      downloadJson('expense-manager-database-export', exported);
+      migrationMessage(`Database export downloaded: ${pluralize(exported.counts.accounts, 'account')}, ${exported.counts.categories === 1 ? '1 category' : exported.counts.categories + ' categories'}, ${pluralize(exported.counts.transactions, 'transaction')}. It is for backup and checking; it cannot be imported back into the app.`, false);
+    } catch (error) {
+      migrationMessage(errorText(error), true);
+    }
+  });
+}
+
+async function runMigrationPreview() {
+  await runMigrationTask(async () => {
+    migrationMessage('Checking the old records against the database...', false);
+
+    try {
+      renderMigrationPreview(await Api.previewImport(buildLegacyBackup()));
+      migrationMessage('', false);
+    } catch (error) {
+      migrationMessage(errorText(error), true);
+    }
+  });
+}
+
+async function runLegacyImport() {
+  await runMigrationTask(async () => {
+    const confirmBox = document.getElementById('migration-confirm');
+
+    // Only a ticked box starts an import (the button is also disabled otherwise).
+    if (!confirmBox || !confirmBox.checked) {
+      return;
+    }
+
+    migrationMessage('Importing...', false);
+
+    let report;
+
+    try {
+      // The old data is read again here, and the server plans the import again
+      // against the database as it is now. The earlier preview is not trusted.
+      report = await Api.importLegacy(buildLegacyBackup());
+    } catch (error) {
+      migrationMessage(errorText(error), true);
+      return;
+    }
+
+    let refreshed = true;
+
+    try {
+      await loadFinancialData(PAGE_DATA.settings);
+    } catch (error) {
+      refreshed = false;
+    }
+
+    let recheck = null;
+
+    try {
+      recheck = importTotals(await Api.previewImport(buildLegacyBackup()));
+    } catch (error) {
+      recheck = null;
+    }
+
+    renderMigrationReport(report, recheck);
+    renderMigrationPanel();
+    migrationMessage(refreshed
+      ? (report.complete ? 'Import complete.' : 'Import finished partially. See the report below.')
+      : 'The import finished, but the page could not reload the database counts. Reload the page.', !refreshed);
+
+    try {
+      sessionStorage.removeItem(LEGACY_NOTICE_DISMISSED);
+    } catch (error) {
+      // Nothing to reset.
+    }
+    clearBanner('legacy-data');
+    renderLegacyNotice();
+  });
+}
+
+function initMigrationPanel() {
+  const panel = document.getElementById('migration-panel');
+
+  if (!panel) {
+    return;
+  }
+
+  document.getElementById('export-legacy').addEventListener('click', runLegacyBackupDownload);
+  document.getElementById('export-database').addEventListener('click', runDatabaseExport);
+  document.getElementById('migration-preview-button').addEventListener('click', runMigrationPreview);
+  renderMigrationPanel();
 }
 
 // ---------------------------------------------------------------------------
@@ -1774,6 +2344,8 @@ async function startPage() {
   } catch (error) {
     clearBanner('loading');
     root.classList.remove('data-pending');
+    migration.dataReady = false;
+    renderMigrationPanel();
 
     if (needsData) {
       root.classList.add('data-error');
@@ -1792,6 +2364,11 @@ async function startPage() {
   if (!pageInitialized) {
     initialize();
     pageInitialized = true;
+  }
+
+  if (page === 'settings') {
+    migration.dataReady = true; // database counts are known now
+    renderMigrationPanel();
   }
 
   root.classList.remove('data-pending');

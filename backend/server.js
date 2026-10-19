@@ -101,7 +101,9 @@ const apiRoutes = {
   '/api/health': { GET: handleHealth },
   ...require('./api/accounts').routes,
   ...require('./api/categories').routes,
-  ...require('./api/transactions').routes
+  ...require('./api/transactions').routes,
+  ...require('./api/importer').routes,
+  ...require('./api/exporter').routes
 };
 
 function handleHealth() {
@@ -153,11 +155,13 @@ function findRoute(pathname) {
 
 // Methods whose body we read. For every other method the body is ignored.
 const BODY_METHODS = ['POST', 'PUT'];
-const MAX_BODY_BYTES = 64 * 1024; // far more than any record here needs
+const MAX_BODY_BYTES = 64 * 1024; // far more than any single record needs
+// A handler can allow a larger body by setting `handler.maxBodyBytes` (only the
+// import endpoints do, because they receive a whole backup at once).
 
 // Reads and parses a JSON request body. Rejects with an ApiError when the
 // content type is wrong, the body is too big, or it is not a JSON object.
-function readJsonBody(req) {
+function readJsonBody(req, maxBytes = MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
     // Requiring application/json also means a web page on another site cannot
     // make the browser send us a "simple" cross-site request (it would need a
@@ -169,19 +173,19 @@ function readJsonBody(req) {
     }
 
     const declared = Number(req.headers['content-length']);
-    let tooLarge = Number.isFinite(declared) && declared > MAX_BODY_BYTES;
+    let tooLarge = Number.isFinite(declared) && declared > maxBytes;
     const chunks = [];
     let size = 0;
 
     req.on('data', chunk => {
       size += chunk.length;
-      if (size > MAX_BODY_BYTES) tooLarge = true;
+      if (size > maxBytes) tooLarge = true;
       if (!tooLarge) chunks.push(chunk); // once too large, just drain and discard
     });
     req.on('error', () => reject(new ApiError(400, 'BAD_REQUEST', 'The request could not be read.')));
     req.on('end', () => {
       if (tooLarge) {
-        return reject(new ApiError(413, 'PAYLOAD_TOO_LARGE', `The request body must be at most ${MAX_BODY_BYTES} bytes.`));
+        return reject(new ApiError(413, 'PAYLOAD_TOO_LARGE', `The request body must be at most ${maxBytes} bytes.`));
       }
       const text = Buffer.concat(chunks).toString('utf8');
       if (text.trim() === '') {
@@ -229,11 +233,12 @@ async function handleApi(req, res, pathname) {
       });
     }
 
-    const body = BODY_METHODS.includes(method) ? await readJsonBody(req) : undefined;
+    const handler = route.methods[method];
+    const body = BODY_METHODS.includes(method) ? await readJsonBody(req, handler.maxBodyBytes) : undefined;
 
     let result;
     try {
-      result = await route.methods[method]({ req, params: route.params, body });
+      result = await handler({ req, params: route.params, body });
     } catch (error) {
       throw translateDatabaseError(error) || error;
     }

@@ -1,6 +1,6 @@
 # Expense Manager
 
-A simple expense manager built with plain HTML, CSS and JavaScript. All of your data is still kept in the browser's `localStorage`. A small Node.js backend now serves the app and provides a SQLite-backed JSON API for transactions, accounts and categories, but the frontend does not use that API yet (see [Current Status](#current-status)).
+A simple expense manager built with plain HTML, CSS and JavaScript. Transactions, accounts and categories are stored in a SQLite database through a small Node.js backend; settings, bills and to-do items are still kept in the browser's `localStorage`. Data saved by the older, browser-only version is **not** imported yet (see [Current Status](#current-status)).
 
 ## Features
 
@@ -9,11 +9,11 @@ A simple expense manager built with plain HTML, CSS and JavaScript. All of your 
 - **Categories**: add and delete income and expense categories. The transaction form uses the categories you have created. Categories and accounts that are used by transactions cannot be deleted.
 - **Dashboard**: total income, total expense, total balance, an income vs expense bar chart for the last 6 months, the 5 most recent transactions, upcoming expenses and a to-do list.
 - **Analytics**: this month vs last month, balance, expense and income statistics, category breakdown charts, category cards and top expenses / top income sources tables. Charts are drawn with HTML, CSS and JavaScript only.
-- **Settings**: theme (light, dark, system), default currency, date format, default transaction type, notification preferences, name and email display, and a reset button that clears all stored data.
+- **Settings**: theme (light, dark, system), default currency, date format, default transaction type, notification preferences, name and email display, and a reset button that clears the settings, bills and to-do items stored in the browser (it never deletes database records).
 - **Notifications**: a bell menu that shows bill reminders and a monthly summary, plus a short message after adding or deleting a transaction. Each can be turned on or off in Settings.
 - **Navigation search**: the search box in the header opens the Transactions page filtered by your search text.
 - **Mobile**: the sidebar becomes a slide-in menu opened with a menu button.
-- **Persistence**: everything is saved in `localStorage` and remains after a page refresh.
+- **Persistence**: transactions, accounts and categories are saved in the SQLite database and remain after a refresh or a server restart. Settings, bills and to-do items are saved in `localStorage`.
 
 Changing the currency only changes the symbol and number format; amounts are not converted. The name, email and password fields in Settings are display only: there is no login or authentication.
 
@@ -22,7 +22,8 @@ Changing the currency only changes the symbol and number format; amounts are not
 - HTML5
 - CSS3
 - Vanilla JavaScript
-- Browser `localStorage`
+- Browser `localStorage` (settings, bills and to-dos only)
+- `fetch` for same-origin calls to the API
 - Font Awesome (loaded from a CDN)
 - Node.js (built-in `http` module, no web framework)
 - SQLite through Node's built-in `node:sqlite` module (no npm packages)
@@ -40,18 +41,24 @@ expense-manager/
 │   │   ├── validate.js     shared request validation
 │   │   ├── accounts.js     /api/accounts
 │   │   ├── categories.js   /api/categories
-│   │   └── transactions.js /api/transactions
+│   │   ├── transactions.js /api/transactions
+│   │   ├── importer.js     /api/import/preview and /api/import (legacy browser data -> SQLite)
+│   │   └── exporter.js     /api/export (database export)
 │   ├── data/               created at runtime; holds the SQLite file (not committed)
 │   └── test/
 │       ├── server.test.js  Stage 1 tests: server, static files, startup, shutdown
-│       └── api.test.js     Stage 2 tests: the three APIs, constraints, migration
+│       ├── api.test.js     Stage 2 tests: the three APIs, constraints, migration
+│       ├── frontend.test.js Stage 3-4 tests: API client, page data layer, legacy-data safety, backup
+│       ├── import.test.js  Stage 4 tests: import, preview, export, idempotency, atomicity
+│       └── browser-check.js optional real-browser check (needs Playwright, see below)
 ├── frontend/
 │   ├── index.html          dashboard
 │   ├── pages/              transactions, categories, accounts, analytics, settings
 │   ├── css/style.css
+│   ├── js/api.js           the only code that calls /api (loaded before script.js)
 │   ├── js/script.js
 │   └── assets/
-└── docs/                   API.md (API reference), stage checkpoints
+└── docs/                   API.md (API reference), stage checkpoints (STAGE1-4_CHECKPOINT.md)
 ```
 
 ## Getting Started
@@ -131,13 +138,27 @@ The backend exposes `GET /api/health` plus create/read/update/delete endpoints f
 Invoke-RestMethod http://127.0.0.1:3000/api/accounts
 ```
 
+## Optional real-browser check
+
+`npm test` needs nothing but Node.js. A second, optional check drives the real pages in a headless browser against a temporary server and database (it never touches your real database or browser profile):
+
+```
+npm install --no-save playwright
+npx playwright install chromium
+node backend/test/browser-check.js
+```
+
 ## Current Status
 
-This is **Stage 2: backend financial data APIs**.
+This is **Stage 4: safe import, export and migration**.
 
-- The Node.js server serves the existing frontend and a JSON API: health, accounts, categories and transactions.
-- SQLite holds `accounts`, `categories` and `transactions` tables (created automatically, empty at first, nothing seeded), with foreign keys and constraints.
-- **The frontend still reads and writes `localStorage`.** It does not call the API, and nothing is migrated from `localStorage` to SQLite yet. That comes in later stages, so data created through the API does not appear in the app and vice versa.
+- Transactions, accounts and categories are read from and written to the database through the API on every page (`frontend/js/api.js` is the only code that calls `/api`).
+- Settings, theme, bills and to-do items stay in `localStorage`.
+- A fresh database is **empty**: the old version's default accounts and categories are not created.
+- **Moving old data:** Settings -> "Move Data From the Old Version" lets you review what the old browser-only version left in this browser, download a backup file, preview the import (nothing is changed), tick a confirmation box and import. The import is all-or-nothing, never overwrites, skips duplicates, reports every rejected record, and can be repeated safely (the second run imports nothing). The records in `localStorage` are only read, never changed or deleted. Details: [docs/STAGE4_CHECKPOINT.md](docs/STAGE4_CHECKPOINT.md).
+- **Exports:** "Download Browser Backup" (old data exactly as stored) and "Download Database Export" (current database). Both are backups/checks; neither can be imported back into the app.
+- A notice on every page remains while old records stay in this browser; after an import it says whether they are already in the database. Dismissing it only hides it for the current tab.
+- The app must be opened through the server (`http://127.0.0.1:3000`). Opening an HTML file directly shows an instruction instead of data.
 
 ## Known Limitations
 
@@ -145,7 +166,9 @@ This is **Stage 2: backend financial data APIs**.
 - Font Awesome icons (menu and bell) load from a CDN and need an internet connection.
 - `node:sqlite` is experimental in Node.js, so its behavior may change in future Node.js releases.
 - The API has no authentication and no CORS headers, and it does not check the `Host` header. It is meant for a computer you control, bound to `127.0.0.1`.
-- Bills, to-do items and settings have no API yet; they stay in `localStorage`.
-- The API rejects amounts with more than 2 decimals and does not accept a category *name* on transactions (it uses `categoryId`), unlike today's frontend. Stage 3 has to adapt for both.
+- Bills, to-do items and settings have no API; they stay in `localStorage`.
+- Each page loads its data when it opens. Changes made in another browser tab appear after a reload (a save or delete that conflicts with such a change refreshes the page's lists and shows a message).
+- The browser backup and the database export cannot be re-imported (backup/inspection only). Old data can only be imported from the same browser and address (`localStorage` is per origin) it was stored in.
+- There is no way yet to edit a record (the original app had none) or to delete all database records from the Settings page.
 - The server is meant for local use only: it listens on `127.0.0.1`, has no login and sends no CORS headers.
 - The shutdown tests need a Linux or macOS machine (Windows cannot send a graceful signal to a child process); they are skipped on Windows.

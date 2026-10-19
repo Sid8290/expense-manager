@@ -255,8 +255,11 @@
           <details>
             <summary>Where is my data stored?</summary>
             <p>
-              Everything is stored in this browser using localStorage. Nothing
-              is sent to a server, and clearing your browser data removes it.
+              Accounts, categories and transactions are stored in the SQLite
+              database of the local server. Theme, bills, to-dos and other
+              settings stay in this browser. Data from the old browser-only
+              version can be copied into the database in the "Move Data From
+              the Old Version" section below.
             </p>
           </details>
 
@@ -276,6 +279,30 @@
               tracked as fixed amounts.
             </p>
           </details>
+        </div>
+      </section>
+
+      <section id="data-migration">
+        <h2>Move Data From the Old Version</h2>
+
+        <div id="migration-panel">
+          <p>
+            Earlier versions kept accounts, categories and transactions in this
+            browser. Review them, save a backup, then copy them into the
+            database. Your browser copies are never changed or deleted.
+          </p>
+
+          <div id="migration-review"></div>
+
+          <div class="settings-actions">
+            <button type="button" id="export-legacy">Download Browser Backup</button>
+            <button type="button" id="migration-preview-button" disabled>Preview Import</button>
+            <button type="button" id="export-database" disabled>Download Database Export</button>
+          </div>
+          <p class="form-message" role="status"></p>
+
+          <div id="migration-preview" hidden></div>
+          <div id="migration-report" hidden></div>
         </div>
       </section>
 

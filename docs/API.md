@@ -1,4 +1,4 @@
-# Expense Manager: API reference (Stage 2)
+# Expense Manager: API reference (Stages 2 and 4)
 
 Base URL: `http://127.0.0.1:3000`. All endpoints live under `/api/`. The frontend does **not** use them yet.
 
@@ -92,6 +92,84 @@ POST /api/transactions   (amount 1.234, income type with an expense category)
      {"field":"amount","message":"Must have at most 2 decimal places."},
      {"field":"categoryId","message":"This is an expense category, but the transaction type is income."}]}}
 ```
+
+## Import and export (Stage 4)
+
+### `POST /api/import/preview` and `POST /api/import`
+
+Both take the **legacy backup** document (the file the Settings page downloads) and run exactly the same code. `preview` plans the import inside a SQLite transaction and **rolls it back**, so it never changes the database. `import` runs the same plan, **commits** it, and requires `"confirm": true` (otherwise `400 CONFIRMATION_REQUIRED`). The import re-plans against the database as it is at that moment; an earlier preview is not trusted.
+
+```json
+{
+  "format": "expense-manager-legacy-backup",
+  "version": 1,
+  "exportedAt": "2026-01-01T10:00:00.000Z",
+  "data": {
+    "accounts":     [ { "id": "acc-1", "name": "Savings", "type": "bank", "balance": 300 } ],
+    "categories":   [ { "name": "Food", "type": "expense" } ],
+    "transactions": [ { "id": "txn-1", "type": "expense", "description": "Tea", "category": "Food",
+                        "accountId": "acc-1", "amount": 12.5, "note": "", "date": "2025-01-05", "createdAt": 1736000000000 } ]
+  },
+  "confirm": true
+}
+```
+
+Other top-level keys (`source`, `complete`, `problems`, `unreadable`, ...) are allowed and ignored. `data` may only contain `accounts`, `categories`, `transactions`.
+
+Rules:
+
+- **All or nothing.** One transaction (`BEGIN IMMEDIATE`). Order: accounts, categories, transactions. Any unexpected failure rolls everything back (`500 IMPORT_FAILED` / `PREVIEW_FAILED`, "Nothing was saved").
+- **Same validation as the normal API** (the same `readBody` functions). Invalid records are *rejected* with a reason; the rest are still imported (`complete: false`).
+- **Never overwrites.** Same id with identical data = `duplicate-in-database` (skipped). Same id with different data, or a taken name = `rejected` (conflict).
+- Ids are preserved. A legacy category is matched to a database category by (type, name ignoring case); the transaction gets that category's numeric id.
+- The old version's two default accounts and two default categories are skipped (`old-default-unused`) unless a transaction uses them.
+- A transaction whose account or category cannot be found is `unresolved-reference` and is not imported (nothing is guessed).
+- Repeating the same import imports 0 records (idempotent).
+- Limits: body 8 MB; 500 accounts, 500 categories, 20000 transactions (`LIMIT_EXCEEDED`).
+
+Response `data`:
+
+```json
+{
+  "mode": "preview",
+  "complete": true,
+  "counts": {
+    "accounts": { "received": 1, "imported": 1, "duplicateInDatabase": 0, "duplicateInFile": 0,
+                  "oldDefaultNotImported": 0, "rejected": 0, "conflicts": 0, "unresolvedReferences": 0 },
+    "categories": { "...": "same fields" },
+    "transactions": { "...": "same fields" }
+  },
+  "items": { "accounts": [], "categories": [], "transactions": [], "transactionsTruncated": false },
+  "verification": { "recordsChecked": 3, "recordsMatching": 3 },
+  "databaseBefore": { "accounts": 0, "categories": 0, "transactions": 0 },
+  "databaseAfter":  { "accounts": 1, "categories": 1, "transactions": 1 }
+}
+```
+
+`items.*` entries are `{ index, outcome, id?, label?, reason? }`; outcomes: `imported`, `duplicate-in-database`, `duplicate-in-file`, `old-default-unused`, `rejected`, `unresolved-reference`. For transactions, imported ones are not listed and at most 200 are returned (`transactionsTruncated`). After a real import every written record is read back and compared (`verification`). In `preview` mode `databaseAfter` shows what the database *would* contain.
+
+Import-specific error codes: `UNSUPPORTED_FORMAT`, `UNSUPPORTED_VERSION`, `INVALID_BODY`, `UNSUPPORTED_ENTITY`, `LIMIT_EXCEEDED`, `CONFIRMATION_REQUIRED` (all 400), `IMPORT_FAILED` / `PREVIEW_FAILED` (500).
+
+### `GET /api/export`
+
+A versioned JSON export of the database (for backup and checking):
+
+```json
+{
+  "format": "expense-manager-database-export",
+  "version": 1,
+  "exportedAt": "2026-01-01T10:00:00.000Z",
+  "counts": { "accounts": 1, "categories": 1, "transactions": 1 },
+  "data": {
+    "accounts":     [ { "id": "acc-1", "name": "Savings", "type": "bank", "balance": 300, "currentBalance": 287.5 } ],
+    "categories":   [ { "id": 1, "name": "Food", "type": "expense" } ],
+    "transactions": [ { "id": "txn-1", "type": "expense", "description": "Tea", "categoryId": 1, "category": "Food",
+                        "accountId": "acc-1", "amount": 12.5, "note": "", "date": "2025-01-05", "createdAt": 1736000000000 } ]
+  }
+}
+```
+
+Records have the same shape the list endpoints return. This document is **not** importable (the importer rejects it with a clear message), and it is read-only: exporting changes nothing.
 
 ## Error codes
 

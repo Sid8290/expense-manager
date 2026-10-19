@@ -347,7 +347,7 @@ describe('script.js data layer (stubbed browser)', () => {
       accounts: ['accounts', 'transactions'],
       categories: ['categories', 'transactions'],
       analytics: ['transactions'],
-      settings: ['transactions']
+      settings: ['accounts', 'categories', 'transactions']
     });
   });
 
@@ -523,8 +523,8 @@ describe('source guards', () => {
     assert.doesNotMatch(SCRIPT_JS, /writeStorage\(\s*STORAGE_KEYS\.(transactions|accounts|categories)/);
     assert.doesNotMatch(SCRIPT_JS, /loadList\(\s*STORAGE_KEYS\.(transactions|accounts|categories)/);
     assert.doesNotMatch(SCRIPT_JS, /localStorage\.setItem\([^)]*(transactions|accounts|categories)/);
-    const removals = SCRIPT_JS.match(/\.removeItem\(/g) || [];
-    assert.equal(removals.length, 1, 'only the reset button removes anything');
+    const removals = SCRIPT_JS.match(/\blocalStorage\.removeItem\(/g) || [];
+    assert.equal(removals.length, 1, 'only the reset button removes anything from localStorage');
     assert.match(SCRIPT_JS, /LOCAL_ONLY_KEYS\.forEach\(key => localStorage\.removeItem\(key\)\)/);
   });
 
@@ -543,5 +543,79 @@ describe('source guards', () => {
     assert.equal(response.status, 200);
     assert.match(response.headers.get('content-type'), /text\/javascript/);
     assert.equal(await response.text(), API_JS);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Part 4: reading the old browser data, the backup document, import client calls
+// ---------------------------------------------------------------------------
+
+describe('legacy backup and review (read-only)', () => {
+  const txn = { id: 'txn-1', type: 'expense', description: 'Tea', category: 'Food', accountId: 'acc-cash', amount: 5, date: '2025-01-01', extra: 'keep me' };
+  const raw = JSON.stringify([txn, { broken: true }]);
+
+  test('the backup keeps every stored entry verbatim, including malformed ones and unknown fields', () => {
+    const app = loadFrontend({ local: { em_transactions: raw } });
+    const backup = plain(app.run('buildLegacyBackup()'));
+    assert.equal(backup.format, 'expense-manager-legacy-backup');
+    assert.equal(backup.version, 1);
+    assert.ok(!Number.isNaN(Date.parse(backup.exportedAt)));
+    assert.equal(backup.complete, true);
+    assert.deepEqual(backup.data.transactions, [txn, { broken: true }]);
+    assert.deepEqual(backup.data.accounts, []);
+    assert.deepEqual(app.writes, [], 'building a backup writes nothing');
+  });
+
+  test('unreadable values are reported and their raw text is kept, not treated as empty', () => {
+    const app = loadFrontend({ local: { em_transactions: '{not json', em_accounts: '{"a":1}' } });
+    const backup = plain(app.run('buildLegacyBackup()'));
+    assert.equal(backup.complete, false);
+    assert.deepEqual(backup.problems.map(p => p.kind).sort(), ['not-a-list', 'unreadable']);
+    assert.equal(backup.unreadable.em_transactions, '{not json');
+    assert.equal(backup.unreadable.em_accounts, '{"a":1}');
+  });
+
+  test('an inaccessible storage key is reported as such', () => {
+    const app = loadFrontend({ local: {} });
+    app.sandbox.localStorage.getItem = () => { throw new Error('blocked'); };
+    const backup = plain(app.run('buildLegacyBackup()'));
+    assert.equal(backup.complete, false);
+    assert.ok(backup.problems.every(p => p.kind === 'inaccessible'));
+  });
+
+  test('the review separates user records, old defaults and malformed entries', () => {
+    const app = loadFrontend({
+      local: {
+        em_transactions: raw,
+        em_accounts: JSON.stringify([{ id: 'acc-cash', name: 'Cash', type: 'cash', balance: 0 }, { id: 'acc-9', name: 'Mine', type: 'bank', balance: 10 }])
+      }
+    });
+    const review = plain(app.run('reviewLegacyData()'));
+    assert.deepEqual(review.entities.transactions, { stored: 2, malformed: 1, defaults: 0, userRecords: 1 });
+    assert.equal(review.entities.accounts.stored, 2);
+    assert.equal(review.entities.accounts.userRecords, 1);
+    assert.equal(review.entities.accounts.defaults, 1);
+    assert.deepEqual(app.writes, []);
+  });
+
+  test('the api client has preview, import (always confirm:true) and export calls', async () => {
+    const seen = [];
+    const client = createClient(stubFetch((url, options) => {
+      seen.push({ url, method: options.method, body: options.body && JSON.parse(options.body) });
+      return jsonResponse(200, { ok: true, data: {} });
+    }));
+    await client.previewImport({ format: 'x', version: 1, data: {} });
+    await client.importLegacy({ format: 'x', version: 1, data: {} });
+    await client.exportDatabase();
+    assert.match(seen[0].url, /\/api\/import\/preview$/);
+    assert.equal(seen[0].body.confirm, undefined, 'preview never sends confirm');
+    assert.match(seen[1].url, /\/api\/import$/);
+    assert.equal(seen[1].body.confirm, true);
+    assert.equal(seen[2].method, 'GET');
+  });
+
+  test('a failed import shows the safe "nothing was saved" message, other 500s stay generic', async () => {
+    const failed = createClient(stubFetch(() => jsonResponse(500, { ok: false, error: { code: 'IMPORT_FAILED', message: 'The import failed. Nothing was saved.' } })));
+    await assert.rejects(failed.importLegacy({}), error => /Nothing was saved/.test(error.message));
   });
 });

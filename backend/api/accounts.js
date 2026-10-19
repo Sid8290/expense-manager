@@ -71,9 +71,20 @@ function readBody(body, isCreate) {
   return clean;
 }
 
+function allAccounts() {
+  return getDb().prepare(`${SELECT_ACCOUNTS} GROUP BY a.id ORDER BY a.rowid`).all().map(toAccount);
+}
+
 function list() {
-  const rows = getDb().prepare(`${SELECT_ACCOUNTS} GROUP BY a.id ORDER BY a.rowid`).all();
-  return ok(rows.map(toAccount));
+  return ok(allAccounts());
+}
+
+// Writes one account. The caller has already validated it (readBody) and
+// checked that its id and name are free. `input.id` must be set.
+function insertAccount(input) {
+  getDb()
+    .prepare('INSERT INTO accounts (id, name, type, balance_minor) VALUES (?, ?, ?, ?)')
+    .run(input.id, input.name, input.type, toMinor(input.balance));
 }
 
 function get({ params }) {
@@ -91,9 +102,7 @@ function create({ body }) {
     throw new ApiError(409, 'CONFLICT', `An account named "${input.name}" already exists.`);
   }
 
-  getDb()
-    .prepare('INSERT INTO accounts (id, name, type, balance_minor) VALUES (?, ?, ?, ?)')
-    .run(id, input.name, input.type, toMinor(input.balance));
+  insertAccount({ ...input, id });
 
   return ok(findAccount(id), 201, { Location: `/api/accounts/${id}` });
 }
@@ -149,4 +158,4 @@ const routes = {
   '/api/accounts/:id': { GET: get, PUT: update, DELETE: remove }
 };
 
-module.exports = { routes, ACCOUNT_TYPES, MONEY_TYPES };
+module.exports = { routes, ACCOUNT_TYPES, MONEY_TYPES, readBody, nameTaken, insertAccount, allAccounts };

@@ -183,6 +183,28 @@ function getStatus() {
   return status;
 }
 
+// Runs `work(connection)` inside ONE SQLite transaction: either every change
+// it makes is kept, or none is. If `work` throws, everything is rolled back
+// and the error is rethrown. With { dryRun: true } the changes are always
+// rolled back, which lets a caller run real code, constraints included, and
+// look at the outcome without keeping anything (used by the import preview).
+function runInTransaction(work, { dryRun = false } = {}) {
+  const connection = getDb();
+  connection.exec('BEGIN IMMEDIATE');
+  try {
+    const result = work(connection);
+    connection.exec(dryRun ? 'ROLLBACK' : 'COMMIT');
+    return result;
+  } catch (error) {
+    try {
+      connection.exec('ROLLBACK');
+    } catch (rollbackError) {
+      // The transaction was already gone (for example a failed COMMIT). Nothing to undo.
+    }
+    throw error;
+  }
+}
+
 // Safe to call more than once.
 function closeDatabase() {
   if (!db) return;
@@ -191,4 +213,4 @@ function closeDatabase() {
   connection.close();
 }
 
-module.exports = { initDatabase, getDb, getStatus, closeDatabase, DEFAULT_DB_PATH, LATEST_VERSION };
+module.exports = { initDatabase, getDb, getStatus, runInTransaction, closeDatabase, DEFAULT_DB_PATH, LATEST_VERSION };

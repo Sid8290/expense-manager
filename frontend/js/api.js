@@ -16,6 +16,11 @@
 
 (function (root) {
   const REQUEST_TIMEOUT_MS = 15000;
+  const IMPORT_TIMEOUT_MS = 120000; // an import can carry thousands of records
+
+  // These 5xx errors come with a fixed, safe sentence that tells the user what
+  // state the data is in ("nothing was saved"), so it is shown as it is.
+  const SAFE_SERVER_MESSAGES = ['IMPORT_FAILED', 'PREVIEW_FAILED'];
 
   // Names shown to the user instead of API field names.
   const FIELD_LABELS = {
@@ -50,6 +55,10 @@
   function errorFromResponse(status, payload) {
     const error = payload && payload.ok === false && payload.error ? payload.error : null;
 
+    if (status >= 500 && error && SAFE_SERVER_MESSAGES.includes(error.code)) {
+      return new ApiError({ kind: 'server', status, code: error.code, message: error.message });
+    }
+
     if (status >= 500) {
       // Never pass server text through for a 5xx; it is already generic, but the
       // UI should not depend on that.
@@ -81,7 +90,7 @@
 
   // `fetchImpl` is injectable so the tests can use Node's fetch with a base URL.
   function createClient(fetchImpl, baseUrl = '') {
-    async function request(method, path, body) {
+    async function request(method, path, body, timeoutMs = REQUEST_TIMEOUT_MS) {
       if (typeof location !== 'undefined' && location.protocol === 'file:') {
         throw networkError('Open the app through the server (run "npm start", then visit http://127.0.0.1:3000).');
       }
@@ -93,7 +102,7 @@
       }
 
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
       let response;
 
       try {
@@ -121,6 +130,12 @@
 
     return {
       health: () => request('GET', '/api/health'),
+
+      // Import of the previous version's data (see docs/API.md). Preview changes
+      // nothing. The real import is only sent with an explicit confirm: true.
+      previewImport: backup => request('POST', '/api/import/preview', backup, IMPORT_TIMEOUT_MS),
+      importLegacy: backup => request('POST', '/api/import', { ...backup, confirm: true }, IMPORT_TIMEOUT_MS),
+      exportDatabase: () => request('GET', '/api/export', undefined, IMPORT_TIMEOUT_MS),
 
       listAccounts: () => request('GET', '/api/accounts'),
       createAccount: account => request('POST', '/api/accounts', account),

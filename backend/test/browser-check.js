@@ -516,7 +516,7 @@ async function main() {
   });
 
   await check('"Dismiss" hides the warning for this tab only', async () => {
-    await legacyPage.click('.status-banner.warning button');
+    await legacyPage.click('.status-banner.warning button:has-text("Dismiss")');
     equal(await legacyPage.locator('.status-banner.warning').count(), 0, 'dismissed');
     await open(legacyPage, '/pages/accounts.html');
     equal(await legacyPage.locator('.status-banner.warning').count(), 0, 'stays dismissed in this tab');
@@ -549,6 +549,131 @@ async function main() {
     equal(await p.locator('.status-banner.warning').count(), 0, 'no banner');
     await p.context().close();
   });
+
+  console.log('\nScenario 6: moving the old browser data into the database (Settings)');
+
+  const mig = {
+    em_transactions: JSON.stringify([
+      { id: 'txn-m1', type: 'expense', description: 'Migrate tea', category: 'MigFood', accountId: 'acc-m1', amount: 12.5, note: 'n', date: '2025-02-05', createdAt: 1738700000000, futureField: 'kept in backup' },
+      { id: 'txn-m2', type: 'income', description: 'Migrate pay', category: 'MigPay', accountId: 'acc-m1', amount: 900, note: '', date: '2025-02-06', createdAt: 1738800000000 },
+      { id: 'txn-bad', type: 'expense', description: 'Broken', category: 'MigFood', accountId: 'acc-m1', amount: -5, note: '', date: '2025-02-07' }
+    ]),
+    em_accounts: JSON.stringify([
+      { id: 'acc-cash', name: 'Cash', type: 'cash', balance: 0 },
+      { id: 'acc-m1', name: 'Migrate Savings', type: 'bank', balance: 300 }
+    ]),
+    em_categories: JSON.stringify([{ name: 'MigFood', type: 'expense' }, { name: 'MigPay', type: 'income' }])
+  };
+  const migPage = await newPage(browser, { legacy: mig });
+  const readLegacy = () => migPage.evaluate(() => ({ t: localStorage.getItem('em_transactions'), a: localStorage.getItem('em_accounts'), c: localStorage.getItem('em_categories') }));
+  const dbBefore = { accounts: (await api('GET', '/api/accounts')).length, categories: (await api('GET', '/api/categories')).length, transactions: (await api('GET', '/api/transactions')).length };
+  let backupText = '';
+
+  await check('the review shows the legacy counts next to the database counts, and writes nothing', async () => {
+    await open(migPage, '/pages/settings.html');
+    await migPage.waitForSelector('#migration-review .card');
+    const review = await text(migPage, '#migration-review');
+    truthy(review.includes('found in this browser'), 'review text: ' + review);
+    truthy(review.includes('1 malformed'), 'the invalid transaction is flagged as malformed');
+    truthy(review.includes('In the database:'), 'database counts shown');
+    equal(await migPage.locator('#migration-preview-button').isEnabled(), true, 'preview enabled');
+    equal(await migPage.locator('#migration-run').count(), 0, 'no import button before a preview');
+    equal(migPage.problems.length, 0, 'console: ' + migPage.problems.join(' | '));
+  });
+
+  await check('the legacy backup downloads, is faithful (unknown field kept) and does not touch localStorage', async () => {
+    const [download] = await Promise.all([migPage.waitForEvent('download'), migPage.click('#export-legacy')]);
+    truthy(/^expense-manager-legacy-backup-\d{4}-\d{2}-\d{2}\.json$/.test(download.suggestedFilename()), 'file name ' + download.suggestedFilename());
+    const file = path.join(tmpRoot, 'legacy-backup.json');
+    await download.saveAs(file);
+    backupText = fs.readFileSync(file, 'utf8');
+    const backup = JSON.parse(backupText);
+    equal(backup.format, 'expense-manager-legacy-backup', 'format');
+    equal(backup.version, 1, 'version');
+    truthy(backup.exportedAt && backup.complete === true, 'timestamp/complete');
+    equal(backup.data.transactions.length, 3, 'all 3 transactions incl. the invalid one');
+    equal(backup.data.transactions[0].futureField, 'kept in backup', 'unknown field');
+    const stored = await readLegacy();
+    equal(stored.t, mig.em_transactions, 'em_transactions');
+  });
+
+  await check('preview changes nothing in the database and shows real numbers', async () => {
+    await migPage.click('#migration-preview-button');
+    await migPage.waitForSelector('#migration-preview table');
+    const preview = await text(migPage, '#migration-preview');
+    truthy(preview.includes('Nothing has been changed yet'), 'says nothing changed');
+    truthy(preview.includes('Broken'), 'rejected record is listed with its reason');
+    equal((await api('GET', '/api/transactions')).length, dbBefore.transactions, 'transactions unchanged');
+    equal((await api('GET', '/api/accounts')).length, dbBefore.accounts, 'accounts unchanged');
+    equal((await api('GET', '/api/categories')).length, dbBefore.categories, 'categories unchanged');
+  });
+
+  await check('importing needs the confirmation box', async () => {
+    equal(await migPage.locator('#migration-run').isDisabled(), true, 'disabled before ticking');
+    await migPage.check('#migration-confirm');
+    equal(await migPage.locator('#migration-run').isEnabled(), true, 'enabled after ticking');
+  });
+
+  await check('import saves exactly the valid records and the report matches the database', async () => {
+    await migPage.click('#migration-run');
+    await migPage.waitForSelector('#migration-report:not([hidden]) table');
+    const report = await text(migPage, '#migration-report');
+    truthy(report.includes('Import finished partially'), 'partial because one record is invalid: ' + report);
+    truthy(report.includes('matched what was sent'), 'verification line');
+    const transactions = await api('GET', '/api/transactions');
+    equal(transactions.length, dbBefore.transactions + 2, 'two transactions added');
+    truthy(transactions.some(t => t.id === 'txn-m1' && t.amount === 12.5 && t.category === 'MigFood'), 'txn-m1 saved correctly');
+    equal(transactions.some(t => t.id === 'txn-bad'), false, 'invalid record not saved');
+    const accounts = await api('GET', '/api/accounts');
+    truthy(accounts.some(a => a.id === 'acc-m1' && a.name === 'Migrate Savings'), 'account saved');
+    equal(accounts.some(a => a.name === 'Cash' && a.id === 'acc-cash'), false, 'unused old default not imported');
+  });
+
+  await check('localStorage is byte-for-byte unchanged after the import', async () => {
+    const stored = await readLegacy();
+    equal(stored.t, mig.em_transactions, 'em_transactions');
+    equal(stored.a, mig.em_accounts, 'em_accounts');
+    equal(stored.c, mig.em_categories, 'em_categories');
+  });
+
+  await check('importing again adds nothing (idempotent) and the notice is updated, not just hidden', async () => {
+    await open(migPage, '/pages/settings.html');
+    await migPage.click('#migration-preview-button');
+    await migPage.waitForSelector('#migration-preview table');
+    equal(await migPage.locator('#migration-run').count(), 0, 'nothing new to import, so no import button');
+    const before = (await api('GET', '/api/transactions')).length;
+    const direct = await api('POST', '/api/import', { ...JSON.parse(backupText), confirm: true });
+    equal(direct.counts.transactions.imported, 0, 'second import imported 0 transactions');
+    equal((await api('GET', '/api/transactions')).length, before, 'count unchanged');
+    await migPage.waitForFunction(() => /cannot be imported|already in the database/.test(document.querySelector('.status-banner')?.innerText || ''));
+    truthy(!(await text(migPage, '.status-banner')).includes('are not in the database yet'), 'no stale "not in the database yet" wording');
+  });
+
+  await check('the imported data appears on the normal pages after a reload', async () => {
+    await open(migPage, '/pages/transactions.html');
+    truthy((await text(migPage, '#transactions-body')).includes('Migrate tea'), 'imported transaction shown');
+  });
+
+  await check('the database export downloads with the documented format', async () => {
+    await open(migPage, '/pages/settings.html');
+    await migPage.waitForFunction(() => !document.getElementById('export-database').disabled);
+    const [download] = await Promise.all([migPage.waitForEvent('download'), migPage.click('#export-database')]);
+    truthy(/^expense-manager-database-export-/.test(download.suggestedFilename()), 'file name');
+    const file = path.join(tmpRoot, 'db-export.json');
+    await download.saveAs(file);
+    const exported = JSON.parse(fs.readFileSync(file, 'utf8'));
+    equal(exported.format, 'expense-manager-database-export', 'format');
+    equal(exported.counts.transactions, (await api('GET', '/api/transactions')).length, 'count matches API');
+  });
+
+  await check('bills, to-dos and theme still work on Settings', async () => {
+    await migPage.evaluate(() => { localStorage.setItem('em_theme', 'dark'); });
+    await open(migPage, '/pages/settings.html');
+    equal(migPage.problems.length, 0, 'console: ' + migPage.problems.join(' | '));
+    truthy((await migPage.evaluate(() => localStorage.getItem('em_theme'))) === 'dark', 'theme kept');
+  });
+
+  await migPage.context().close();
 
   console.log('\nScenario 5: opened as a file instead of through the server');
 

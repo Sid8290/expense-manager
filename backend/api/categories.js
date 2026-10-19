@@ -47,9 +47,19 @@ function readBody(body) {
   return clean;
 }
 
+function allCategories() {
+  return getDb().prepare('SELECT id, name, type FROM categories ORDER BY id').all().map(toCategory);
+}
+
 function list() {
-  const rows = getDb().prepare('SELECT id, name, type FROM categories ORDER BY id').all();
-  return ok(rows.map(toCategory));
+  return ok(allCategories());
+}
+
+// Writes one category and returns its new numeric id. The caller has already
+// validated it (readBody) and checked that the name is free.
+function insertCategory(input) {
+  const result = getDb().prepare('INSERT INTO categories (name, type) VALUES (?, ?)').run(input.name, input.type);
+  return Number(result.lastInsertRowid);
 }
 
 function get({ params }) {
@@ -63,10 +73,7 @@ function create({ body }) {
     throw new ApiError(409, 'CONFLICT', `The ${input.type} category "${input.name}" already exists.`);
   }
 
-  const result = getDb()
-    .prepare('INSERT INTO categories (name, type) VALUES (?, ?)')
-    .run(input.name, input.type);
-  const id = Number(result.lastInsertRowid);
+  const id = insertCategory(input);
 
   return ok(findCategory(id), 201, { Location: `/api/categories/${id}` });
 }
@@ -118,4 +125,4 @@ const routes = {
   '/api/categories/:id': { GET: get, PUT: update, DELETE: remove }
 };
 
-module.exports = { routes, CATEGORY_TYPES };
+module.exports = { routes, CATEGORY_TYPES, readBody, nameTaken, insertCategory, allCategories };

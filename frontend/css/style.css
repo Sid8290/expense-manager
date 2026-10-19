@@ -1503,3 +1503,30 @@ html.data-pending main > :not(header):not(.status-banners),
 html.data-error main > :not(header):not(.status-banners) {
   display: none;
 }
+
+/* Settings: Move Data From the Old Version */
+.migration-count {
+  font-size: 1.6rem;
+  font-weight: bold;
+}
+
+.migration-warning {
+  color: var(--danger-color, #b45309);
+}
+
+.migration-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-medium);
+  margin-top: var(--spacing-medium);
+}
+
+.migration-problems {
+  max-height: 16rem;
+  overflow-y: auto;
+}
+
+#migration-preview,
+#migration-report {
+  margin-top: var(--spacing-medium);
+}

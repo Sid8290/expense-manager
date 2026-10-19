@@ -94,9 +94,35 @@ function readBody(body, isCreate) {
   return clean;
 }
 
+function allTransactions() {
+  return getDb().prepare(`${SELECT_TRANSACTIONS} ${ORDER_NEWEST}`).all().map(toTransaction);
+}
+
 function list() {
-  const rows = getDb().prepare(`${SELECT_TRANSACTIONS} ${ORDER_NEWEST}`).all();
-  return ok(rows.map(toTransaction));
+  return ok(allTransactions());
+}
+
+// Writes one transaction. The caller has already validated it (readBody,
+// which also checks the account and category) and checked that the id is
+// free. `input.id` must be set.
+function insertTransaction(input) {
+  getDb()
+    .prepare(
+      `INSERT INTO transactions
+         (id, type, description, category_id, account_id, amount_minor, note, date, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      input.id,
+      input.type,
+      input.description,
+      input.categoryId,
+      input.accountId,
+      toMinor(input.amount),
+      input.note,
+      input.date,
+      input.createdAt ?? Date.now()
+    );
 }
 
 function get({ params }) {
@@ -111,23 +137,7 @@ function create({ body }) {
     throw new ApiError(409, 'CONFLICT', 'A transaction with this id already exists.');
   }
 
-  getDb()
-    .prepare(
-      `INSERT INTO transactions
-         (id, type, description, category_id, account_id, amount_minor, note, date, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      id,
-      input.type,
-      input.description,
-      input.categoryId,
-      input.accountId,
-      toMinor(input.amount),
-      input.note,
-      input.date,
-      input.createdAt ?? Date.now()
-    );
+  insertTransaction({ ...input, id });
 
   return ok(findTransaction(id), 201, { Location: `/api/transactions/${id}` });
 }
@@ -171,4 +181,4 @@ const routes = {
   '/api/transactions/:id': { GET: get, PUT: update, DELETE: remove }
 };
 
-module.exports = { routes };
+module.exports = { routes, readBody, insertTransaction, findTransaction, allTransactions };
