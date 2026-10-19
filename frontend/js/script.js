@@ -61,6 +61,35 @@ const CURRENCY_LOCALES = {
 
 const DATE_FORMATS = ['DD/MM/YYYY', 'MM/DD/YYYY', 'YYYY/MM/DD'];
 
+// ---------------------------------------------------------------------------
+// Where the data lives
+//
+// Transactions, accounts and categories are stored in the database and reached
+// through the API (see js/api.js). Each page keeps a copy in `store` so the
+// existing render and calculation code can stay synchronous. The store is
+// filled when a page opens and changed only AFTER the server confirms a change.
+//
+// Settings, bills and to-dos are not financial records and stay in localStorage.
+//
+// The old localStorage keys em_transactions, em_accounts and em_categories are
+// never written or deleted by this file. They are only READ, to warn the user
+// about data that has not been imported into the database yet.
+// ---------------------------------------------------------------------------
+
+const LOCAL_ONLY_KEYS = [STORAGE_KEYS.settings, STORAGE_KEYS.bills, STORAGE_KEYS.todos];
+
+// The lists each page needs from the API.
+const PAGE_DATA = {
+  dashboard: ['accounts', 'transactions'],
+  transactions: ['accounts', 'categories', 'transactions'],
+  accounts: ['accounts', 'transactions'],
+  categories: ['categories', 'transactions'],
+  analytics: ['transactions'],
+  settings: ['transactions'] // only for the monthly summary in the notification bell
+};
+
+const store = { accounts: [], categories: [], transactions: [] };
+
 let settings = getSettings();
 let toastTimer = null;
 let updateNotifications = function () {};
@@ -141,15 +170,15 @@ function isValidTodo(item) {
 }
 
 function getTransactions() {
-  return loadList(STORAGE_KEYS.transactions, [], isValidTransaction);
+  return store.transactions;
 }
 
 function getAccounts() {
-  return loadList(STORAGE_KEYS.accounts, DEFAULT_ACCOUNTS, isValidAccount);
+  return store.accounts;
 }
 
 function getCategories() {
-  return loadList(STORAGE_KEYS.categories, DEFAULT_CATEGORIES, isValidCategory);
+  return store.categories;
 }
 
 function getBills() {
@@ -952,7 +981,14 @@ function renderTransactionTable() {
   summary.textContent = `Showing ${list.length} of ${allCount} transactions | Income: ${formatCurrency(totals.income)} | Expenses: ${formatCurrency(totals.expense)}`;
 }
 
-function handleAddTransaction(event) {
+function refreshTransactionsPage() {
+  fillCategoryOptions();
+  fillAccountOptions();
+  fillFilterOptions();
+  renderTransactionTable();
+}
+
+async function handleAddTransaction(event) {
   event.preventDefault();
 
   const form = event.currentTarget;
@@ -966,7 +1002,10 @@ function handleAddTransaction(event) {
 
   if (!description) return showFormMessage(form, 'Please enter a description.', true);
 
-  if (!getCategories().some(item => item.type === type && item.name === category)) {
+  // The form lists category NAMES; the API wants the category's id.
+  const categoryRecord = getCategories().find(item => item.type === type && item.name === category);
+
+  if (!categoryRecord) {
     return showFormMessage(form, 'Please select a category. Add one on the Categories page if the list is empty.', true);
   }
 
@@ -978,57 +1017,70 @@ function handleAddTransaction(event) {
   if (!date) return showFormMessage(form, 'Please choose a date.', true);
   if (date > todayISO()) return showFormMessage(form, 'The date cannot be in the future.', true);
 
-  const transactions = getTransactions();
+  await submitWithBusy(form, async () => {
+    try {
+      const created = await Api.createTransaction({
+        type,
+        description,
+        categoryId: categoryRecord.id,
+        accountId,
+        amount,
+        note,
+        date
+      });
+      store.transactions.push(created);
+    } catch (error) {
+      // The form keeps what the user typed so they can fix it and retry.
+      showFormMessage(form, errorText(error), true);
+      if (needsResync(error)) await resync(refreshTransactionsPage);
+      return;
+    }
 
-  transactions.push({
-    id: generateId('txn'),
-    description,
-    type,
-    category,
-    accountId,
-    amount,
-    note,
-    date,
-    createdAt: Date.now()
+    ['description', 'amount', 'note'].forEach(id => {
+      document.getElementById(id).value = '';
+    });
+
+    fillAccountOptions();
+    renderTransactionTable();
+    updateNotifications();
+    showFormMessage(form, 'Transaction added.', false);
+
+    if (settings.transactionNotifications) {
+      showToast('Transaction added');
+    }
   });
-
-  if (!writeStorage(STORAGE_KEYS.transactions, transactions)) {
-    return showFormMessage(form, STORAGE_ERROR, true);
-  }
-
-  ['description', 'amount', 'note'].forEach(id => {
-    document.getElementById(id).value = '';
-  });
-
-  fillAccountOptions();
-  renderTransactionTable();
-  updateNotifications();
-  showFormMessage(form, 'Transaction added.', false);
-
-  if (settings.transactionNotifications) {
-    showToast('Transaction added');
-  }
 }
 
-function handleDeleteTransaction(event) {
+async function handleDeleteTransaction(event) {
   const button = event.target.closest('button[data-delete-id]');
 
-  if (!button || !confirm('Delete this transaction?')) {
+  if (!button || button.disabled || !confirm('Delete this transaction?')) {
     return;
   }
 
-  const remaining = getTransactions().filter(item => item.id !== button.dataset.deleteId);
+  const id = button.dataset.deleteId;
+  let alreadyGone = false;
+  button.disabled = true;
 
-  if (!writeStorage(STORAGE_KEYS.transactions, remaining)) {
-    showToast(STORAGE_ERROR);
-    return;
+  try {
+    await Api.deleteTransaction(id);
+  } catch (error) {
+    if (!isGone(error)) {
+      button.disabled = false;
+      showToast(errorText(error));
+      return;
+    }
+    alreadyGone = true; // deleted elsewhere (for example in another tab)
+    showToast('That transaction no longer exists.');
   }
+
+  store.transactions = store.transactions.filter(item => item.id !== id);
 
   fillAccountOptions();
   renderTransactionTable();
   updateNotifications();
 
-  if (settings.transactionNotifications) {
+  if (!alreadyGone && settings.transactionNotifications) {
     showToast('Transaction deleted');
   }
 }
@@ -1080,14 +1132,20 @@ function renderCategories() {
   renderCategoryCards(document.getElementById('income-categories'), 'income', true);
 }
 
-function handleCategoryDelete(event) {
+async function handleCategoryDelete(event) {
   const button = event.target.closest('button[data-name]');
 
-  if (!button) {
+  if (!button || button.disabled) {
     return;
   }
 
   const { name, type } = button.dataset;
+  const category = getCategories().find(item => item.type === type && item.name === name);
+
+  if (!category) {
+    return;
+  }
+
   const used = getTransactions().filter(item => item.type === type && item.category === name).length;
 
   if (used > 0) {
@@ -1099,9 +1157,21 @@ function handleCategoryDelete(event) {
     return;
   }
 
-  const remaining = getCategories().filter(category => !(category.type === type && category.name === name));
+  button.disabled = true;
 
-  writeStorage(STORAGE_KEYS.categories, remaining);
+  try {
+    await Api.deleteCategory(category.id);
+  } catch (error) {
+    if (!isGone(error)) {
+      button.disabled = false;
+      showToast(errorText(error)); // for example: used by a transaction added elsewhere
+      if (needsResync(error)) await resync(renderCategories);
+      return;
+    }
+    showToast('That category no longer exists.');
+  }
+
+  store.categories = store.categories.filter(item => item.id !== category.id);
   renderCategories();
 }
 
@@ -1110,7 +1180,7 @@ function initCategories() {
 
   renderCategories();
 
-  form.addEventListener('submit', event => {
+  form.addEventListener('submit', async event => {
     event.preventDefault();
 
     const nameInput = document.getElementById('category-name');
@@ -1120,18 +1190,23 @@ function initCategories() {
     if (!name) return showFormMessage(form, 'Please enter a category name.', true);
     if (type !== 'income' && type !== 'expense') return showFormMessage(form, 'Please choose a category type.', true);
 
-    const categories = getCategories();
-    const exists = categories.some(item => item.type === type && item.name.toLowerCase() === name.toLowerCase());
+    const exists = getCategories().some(item => item.type === type && item.name.toLowerCase() === name.toLowerCase());
 
     if (exists) return showFormMessage(form, `The ${type} category "${name}" already exists.`, true);
 
-    categories.push({ name, type });
+    await submitWithBusy(form, async () => {
+      try {
+        store.categories.push(await Api.createCategory({ name, type }));
+      } catch (error) {
+        showFormMessage(form, errorText(error), true);
+        if (needsResync(error)) await resync(renderCategories);
+        return;
+      }
 
-    if (!writeStorage(STORAGE_KEYS.categories, categories)) return showFormMessage(form, STORAGE_ERROR, true);
-
-    nameInput.value = '';
-    renderCategories();
-    showFormMessage(form, 'Category added.', false);
+      nameInput.value = '';
+      renderCategories();
+      showFormMessage(form, 'Category added.', false);
+    });
   });
 
   document.getElementById('expense-categories').addEventListener('click', handleCategoryDelete);
@@ -1186,10 +1261,10 @@ function renderAccounts() {
   renderAccountGroup('payable-accounts', inGroup('payable'), 'You do not owe anyone money.');
 }
 
-function handleAccountDelete(event) {
+async function handleAccountDelete(event) {
   const button = event.target.closest('button[data-account-id]');
 
-  if (!button) {
+  if (!button || button.disabled) {
     return;
   }
 
@@ -1211,7 +1286,21 @@ function handleAccountDelete(event) {
     return;
   }
 
-  writeStorage(STORAGE_KEYS.accounts, getAccounts().filter(item => item.id !== accountId));
+  button.disabled = true;
+
+  try {
+    await Api.deleteAccount(accountId);
+  } catch (error) {
+    if (!isGone(error)) {
+      button.disabled = false;
+      showToast(errorText(error));
+      if (needsResync(error)) await resync(renderAccounts);
+      return;
+    }
+    showToast('That account no longer exists.');
+  }
+
+  store.accounts = store.accounts.filter(item => item.id !== accountId);
   renderAccounts();
 }
 
@@ -1220,7 +1309,7 @@ function initAccounts() {
 
   renderAccounts();
 
-  form.addEventListener('submit', event => {
+  form.addEventListener('submit', async event => {
     event.preventDefault();
 
     const nameInput = document.getElementById('account-name');
@@ -1233,20 +1322,24 @@ function initAccounts() {
     if (!ACCOUNT_TYPE_KEYS.includes(type)) return showFormMessage(form, 'Please choose an account type.', true);
     if (balance === null) return showFormMessage(form, 'Please enter a valid amount (zero or more).', true);
 
-    const accounts = getAccounts();
-
-    if (accounts.some(item => item.name.toLowerCase() === name.toLowerCase())) {
+    if (getAccounts().some(item => item.name.toLowerCase() === name.toLowerCase())) {
       return showFormMessage(form, `An account named "${name}" already exists.`, true);
     }
 
-    accounts.push({ id: generateId('acc'), name, type, balance });
+    await submitWithBusy(form, async () => {
+      try {
+        store.accounts.push(await Api.createAccount({ name, type, balance }));
+      } catch (error) {
+        showFormMessage(form, errorText(error), true);
+        if (needsResync(error)) await resync(renderAccounts);
+        return;
+      }
 
-    if (!writeStorage(STORAGE_KEYS.accounts, accounts)) return showFormMessage(form, STORAGE_ERROR, true);
-
-    nameInput.value = '';
-    amountInput.value = '';
-    renderAccounts();
-    showFormMessage(form, 'Account added.', false);
+      nameInput.value = '';
+      amountInput.value = '';
+      renderAccounts();
+      showFormMessage(form, 'Account added.', false);
+    });
   });
 
   ['money-accounts', 'asset-accounts', 'receivable-accounts', 'payable-accounts'].forEach(id => {
@@ -1416,13 +1509,16 @@ function initSettings() {
     showFormMessage(preferencesForm, 'Preferences saved.', false);
   });
 
+  // Resets only what is stored in this browser for non-financial features.
+  // Transactions, accounts and categories live in the database and are not
+  // touched (and the old financial localStorage keys are never removed).
   document.getElementById('reset-data').addEventListener('click', () => {
-    if (!confirm('This will delete all transactions, accounts, categories and settings. Continue?')) {
+    if (!confirm('This will reset your settings, bills and to-do items. Your transactions, accounts and categories are stored in the database and will NOT be deleted. Continue?')) {
       return;
     }
 
     try {
-      Object.values(STORAGE_KEYS).forEach(key => localStorage.removeItem(key));
+      LOCAL_ONLY_KEYS.forEach(key => localStorage.removeItem(key));
     } catch (error) {
       showToast('Could not reset the data.');
       return;
@@ -1431,6 +1527,281 @@ function initSettings() {
     location.reload();
   });
 }
+
+// ---------------------------------------------------------------------------
+// Talking to the API
+// ---------------------------------------------------------------------------
+
+// Fills the store with the lists a page needs. All requests must succeed, or the
+// store is left exactly as it was.
+async function loadFinancialData(names) {
+  const loaders = {
+    accounts: Api.listAccounts,
+    categories: Api.listCategories,
+    transactions: Api.listTransactions
+  };
+  const results = await Promise.all(names.map(name => loaders[name]()));
+
+  names.forEach((name, index) => {
+    store[name] = results[index];
+  });
+}
+
+// Text that is safe to show to the user. ApiError messages are already safe.
+function errorText(error) {
+  if (error instanceof ApiError) {
+    return error.message;
+  }
+
+  console.error(error);
+  return 'Something went wrong. Please try again.';
+}
+
+// The record was already removed (for example in another tab).
+function isGone(error) {
+  return error instanceof ApiError && error.status === 404;
+}
+
+// After these errors our copy of the data may be out of date, so reload it.
+function needsResync(error) {
+  return error instanceof ApiError
+    && (error.status === 404
+      || error.status === 409
+      || error.details.some(item => item.field === 'categoryId' || item.field === 'accountId'));
+}
+
+async function resync(rerender) {
+  try {
+    await loadFinancialData(PAGE_DATA[document.body.dataset.page]);
+    rerender();
+    updateNotifications();
+  } catch (error) {
+    // The original error is already on screen; nothing more to say.
+  }
+}
+
+// Runs a save for a form. A second submit while the first is still running is
+// ignored, and the form's submit buttons stay disabled until it finishes.
+async function submitWithBusy(form, task) {
+  if (form.dataset.busy === 'true') {
+    return;
+  }
+
+  const buttons = form.querySelectorAll('button[type="submit"]');
+
+  form.dataset.busy = 'true';
+  buttons.forEach(button => { button.disabled = true; });
+
+  try {
+    await task();
+  } finally {
+    delete form.dataset.busy;
+    buttons.forEach(button => { button.disabled = false; });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Banners: loading, backend problems, and data from the old version
+// ---------------------------------------------------------------------------
+
+function setBanner(id, text, { kind = 'info', actions = [] } = {}) {
+  const header = document.querySelector('main > header');
+
+  if (!header) {
+    return;
+  }
+
+  let area = document.querySelector('.status-banners');
+
+  if (!area) {
+    area = document.createElement('div');
+    area.className = 'status-banners';
+    header.insertAdjacentElement('afterend', area);
+  }
+
+  let banner = area.querySelector(`[data-banner="${id}"]`);
+
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.dataset.banner = id;
+    area.appendChild(banner);
+  }
+
+  banner.className = 'status-banner ' + kind;
+  banner.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+  banner.textContent = '';
+
+  const message = document.createElement('p');
+  message.textContent = text;
+  banner.appendChild(message);
+
+  actions.forEach(action => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn-secondary btn-small';
+    button.textContent = action.label;
+    button.addEventListener('click', () => action.onClick(button));
+    banner.appendChild(button);
+  });
+}
+
+function clearBanner(id) {
+  const banner = document.querySelector(`.status-banners [data-banner="${id}"]`);
+
+  if (banner) {
+    banner.remove();
+  }
+}
+
+// Counts the financial records the OLD version left in this browser. It only
+// reads. The old app wrote its default accounts and categories into
+// localStorage on first use, so those, when untouched, are not counted.
+function getLegacyFinancialSummary() {
+  const read = (key, isValid) => {
+    const data = readStorage(key, null);
+    return Array.isArray(data) ? data.filter(isValid) : [];
+  };
+
+  const isDefaultAccount = account => DEFAULT_ACCOUNTS.some(item => {
+    return item.id === account.id && item.name === account.name
+      && item.type === account.type && item.balance === account.balance;
+  });
+  const isDefaultCategory = category => DEFAULT_CATEGORIES.some(item => {
+    return item.name === category.name && item.type === category.type;
+  });
+
+  return {
+    transactions: read(STORAGE_KEYS.transactions, isValidTransaction).length,
+    accounts: read(STORAGE_KEYS.accounts, isValidAccount).filter(item => !isDefaultAccount(item)).length,
+    categories: read(STORAGE_KEYS.categories, isValidCategory).filter(item => !isDefaultCategory(item)).length
+  };
+}
+
+const LEGACY_NOTICE_DISMISSED = 'em_legacy_notice_dismissed'; // sessionStorage, this tab only
+
+function renderLegacyNotice() {
+  try {
+    if (sessionStorage.getItem(LEGACY_NOTICE_DISMISSED) === '1') {
+      return;
+    }
+  } catch (error) {
+    // sessionStorage unavailable: show the notice every time.
+  }
+
+  const summary = getLegacyFinancialSummary();
+  const parts = [];
+
+  if (summary.transactions > 0) parts.push(pluralize(summary.transactions, 'transaction'));
+  if (summary.accounts > 0) parts.push(pluralize(summary.accounts, 'account'));
+  if (summary.categories > 0) parts.push(summary.categories === 1 ? '1 category' : `${summary.categories} categories`);
+
+  if (parts.length === 0) {
+    return;
+  }
+
+  setBanner(
+    'legacy-data',
+    'This browser still holds financial data from the previous version of the app that is not in the database yet: '
+      + parts.join(', ')
+      + '. It has not been changed or deleted. Importing it is planned for a later update, so until then it will not appear in the app.',
+    {
+      kind: 'warning',
+      actions: [{
+        label: 'Dismiss',
+        onClick: () => {
+          try {
+            sessionStorage.setItem(LEGACY_NOTICE_DISMISSED, '1');
+          } catch (error) {
+            // Nothing to remember it with; just hide it now.
+          }
+          clearBanner('legacy-data');
+        }
+      }]
+    }
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Page start-up
+// ---------------------------------------------------------------------------
+
+const PAGE_INITIALIZERS = {
+  dashboard: initDashboard,
+  transactions: initTransactions,
+  categories: initCategories,
+  accounts: initAccounts,
+  analytics: initAnalytics,
+  settings: initSettings
+};
+
+let pageInitialized = false;
+let pageStarting = false;
+
+// Loads what the page needs from the API, then starts the page. Until the data
+// has arrived, the financial content is hidden (see "data-pending" in the CSS)
+// so that placeholder zeros are never mistaken for real values. If the server
+// cannot be reached, an error with a retry button is shown instead.
+async function startPage() {
+  const root = document.documentElement;
+  const page = document.body.dataset.page;
+  const initialize = PAGE_INITIALIZERS[page];
+
+  if (!initialize || pageStarting) {
+    root.classList.remove('data-pending');
+    return;
+  }
+
+  pageStarting = true;
+
+  // Settings works without financial data, so it starts at once.
+  const needsData = page !== 'settings';
+
+  if (!needsData && !pageInitialized) {
+    initialize();
+    pageInitialized = true;
+  }
+
+  clearBanner('load-error');
+  root.classList.remove('data-error');
+
+  if (needsData) {
+    root.classList.add('data-pending');
+    setBanner('loading', 'Loading your data...', { kind: 'info' });
+  }
+
+  try {
+    await loadFinancialData(PAGE_DATA[page]);
+  } catch (error) {
+    clearBanner('loading');
+    root.classList.remove('data-pending');
+
+    if (needsData) {
+      root.classList.add('data-error');
+    }
+
+    setBanner('load-error', errorText(error), {
+      kind: 'error',
+      actions: [{ label: 'Try again', onClick: () => startPage() }]
+    });
+    pageStarting = false;
+    return;
+  }
+
+  clearBanner('loading');
+
+  if (!pageInitialized) {
+    initialize();
+    pageInitialized = true;
+  }
+
+  root.classList.remove('data-pending');
+  updateNotifications();
+  pageStarting = false;
+}
+
+// Hide financial content from the first moment (this script runs in <head>)
+// until startPage() has decided what to show.
+document.documentElement.classList.add('data-pending');
 
 applyTheme();
 
@@ -1444,19 +1815,6 @@ if (window.matchMedia) {
 
 document.addEventListener('DOMContentLoaded', () => {
   initLayout();
-
-  const initializers = {
-    dashboard: initDashboard,
-    transactions: initTransactions,
-    categories: initCategories,
-    accounts: initAccounts,
-    analytics: initAnalytics,
-    settings: initSettings
-  };
-
-  const initialize = initializers[document.body.dataset.page];
-
-  if (initialize) {
-    initialize();
-  }
+  renderLegacyNotice();
+  startPage();
 });

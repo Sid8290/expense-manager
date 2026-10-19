@@ -1447,3 +1447,59 @@ tbody tr:last-child td {
     box-shadow: var(--shadow);
   }
 }
+
+
+/* Status Banners (loading, backend problems, data from the old version) */
+
+.status-banners {
+  display: flex;
+  flex-direction: column;
+
+  gap: var(--spacing-small);
+
+  margin: 0 var(--spacing-medium) var(--spacing-medium);
+}
+
+.status-banner {
+  display: flex;
+
+  flex-wrap: wrap;
+  align-items: center;
+
+  gap: var(--spacing-small) var(--spacing-medium);
+
+  padding: var(--spacing-small) var(--spacing-medium);
+
+  background-color: var(--surface);
+  color: var(--text-primary);
+
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: var(--radius-medium);
+
+  font-size: var(--font-small);
+}
+
+.status-banner p {
+  flex: 1 1 260px;
+}
+
+.status-banner.info {
+  border-left-color: var(--primary);
+}
+
+.status-banner.warning {
+  border-left-color: var(--warning);
+}
+
+.status-banner.error {
+  border-left-color: var(--expense);
+}
+
+/* Until the data has loaded (or if it could not be loaded), hide the page
+   content so placeholder values are not mistaken for real ones. */
+
+html.data-pending main > :not(header):not(.status-banners),
+html.data-error main > :not(header):not(.status-banners) {
+  display: none;
+}
