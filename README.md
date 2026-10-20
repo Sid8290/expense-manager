@@ -1,6 +1,6 @@
 # Expense Manager
 
-A simple expense manager built with plain HTML, CSS and JavaScript. Transactions, accounts and categories are stored in a SQLite database through a small Node.js backend; settings, bills and to-do items are still kept in the browser's `localStorage`. Data saved by the older, browser-only version is **not** imported yet (see [Current Status](#current-status)).
+A simple expense manager built with plain HTML, CSS and JavaScript. Transactions, accounts and categories are stored in a SQLite database through a small Node.js backend; settings, bills and to-do items are still kept in the browser's `localStorage`. Data saved by the older, browser-only version can be copied into the database from the Settings page (see [Current Status](#current-status)).
 
 ## Features
 
@@ -10,6 +10,7 @@ A simple expense manager built with plain HTML, CSS and JavaScript. Transactions
 - **Dashboard**: total income, total expense, total balance, an income vs expense bar chart for the last 6 months, the 5 most recent transactions, upcoming expenses and a to-do list.
 - **Analytics**: this month vs last month, balance, expense and income statistics, category breakdown charts, category cards and top expenses / top income sources tables. Charts are drawn with HTML, CSS and JavaScript only.
 - **Settings**: theme (light, dark, system), default currency, date format, default transaction type, notification preferences, name and email display, and a reset button that clears the settings, bills and to-do items stored in the browser (it never deletes database records).
+- **Data migration and export** (Settings): review records left in the browser by the older version, download a backup, preview and confirm an import into the database, and download a database export. Nothing in the browser is changed or deleted.
 - **Notifications**: a bell menu that shows bill reminders and a monthly summary, plus a short message after adding or deleting a transaction. Each can be turned on or off in Settings.
 - **Navigation search**: the search box in the header opens the Transactions page filtered by your search text.
 - **Mobile**: the sidebar becomes a slide-in menu opened with a menu button.

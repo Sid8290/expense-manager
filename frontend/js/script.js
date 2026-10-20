@@ -543,7 +543,7 @@ function renderCategoryCards(container, type, manageable) {
       <h3>${escapeHTML(item.name)}</h3>
       <p class="${type}">${formatCurrency(item.total)}</p>
       <p>${pluralize(item.count, 'transaction')}</p>
-      ${manageable ? `<button type="button" class="btn-danger btn-small" data-name="${escapeHTML(item.name)}" data-type="${type}">Delete</button>` : ''}
+      ${manageable ? `<button type="button" class="btn-danger btn-small" data-name="${escapeHTML(item.name)}" data-type="${type}" aria-label="Delete category ${escapeHTML(item.name)}">Delete</button>` : ''}
     </div>
   `).join('');
 }
@@ -793,7 +793,7 @@ function renderTodos() {
         <input type="checkbox" data-todo-id="${escapeHTML(todo.id)}" ${todo.done ? 'checked' : ''} />
         <span>${escapeHTML(todo.text)}</span>
       </label>
-      <button type="button" class="btn-danger btn-small" data-todo-delete="${escapeHTML(todo.id)}">Delete</button>
+      <button type="button" class="btn-danger btn-small" data-todo-delete="${escapeHTML(todo.id)}" aria-label="Delete to-do ${escapeHTML(todo.text)}">Delete</button>
     </li>
   `).join('');
 
@@ -972,7 +972,7 @@ function renderTransactionTable() {
       <td>${escapeHTML(getAccountName(accounts, item.accountId))}</td>
       <td class="amount ${item.type}">${item.type === 'income' ? '+' : '-'}${formatCurrency(item.amount)}</td>
       <td>${escapeHTML(item.note || '')}</td>
-      <td><button type="button" class="btn-danger btn-small" data-delete-id="${escapeHTML(item.id)}">Delete</button></td>
+      <td><button type="button" class="btn-danger btn-small" data-delete-id="${escapeHTML(item.id)}" aria-label="Delete transaction ${escapeHTML(item.description)}">Delete</button></td>
     </tr>
   `).join('');
 
@@ -1226,7 +1226,7 @@ function renderAccountGroup(containerId, list, emptyText) {
       <h3>${escapeHTML(account.name)}</h3>
       <p class="${account.current < 0 ? 'expense' : ''}">${formatCurrency(account.current)}</p>
       <p>${ACCOUNT_TYPES[account.type].label}</p>
-      <button type="button" class="btn-danger btn-small" data-account-id="${escapeHTML(account.id)}">Delete</button>
+      <button type="button" class="btn-danger btn-small" data-account-id="${escapeHTML(account.id)}" aria-label="Delete account ${escapeHTML(account.name)}">Delete</button>
     </div>
   `).join('');
 }

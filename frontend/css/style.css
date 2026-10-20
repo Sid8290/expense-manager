@@ -1382,7 +1382,7 @@ tbody tr:last-child td {
   /* Analytics Tables */
 
   .analytics-tables {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   /* Settings */

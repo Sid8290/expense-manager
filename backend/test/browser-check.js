@@ -686,6 +686,35 @@ async function main() {
     await p.context().close();
   });
 
+  console.log('\nScenario 7: phone-width layout and accessible names (post-Stage 4 audit)');
+
+  await check('no page scrolls sideways at 360px wide (tables scroll inside their own box)', async () => {
+    const context = await browser.newContext({ viewport: { width: 360, height: 800 } });
+    await context.route(/cdnjs\.cloudflare\.com/, route => route.abort());
+    const p = await context.newPage();
+    for (const target of ['/', '/pages/transactions.html', '/pages/accounts.html', '/pages/categories.html', '/pages/analytics.html', '/pages/settings.html']) {
+      await open(p, target);
+      const extra = await p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+      equal(extra, 0, `${target} horizontal overflow (px)`);
+    }
+    await context.close();
+  });
+
+  await check('delete buttons say what they delete (accessible name includes the record)', async () => {
+    const p = await newPage(browser);
+    await open(p, '/pages/transactions.html');
+    const names = await p.$$eval('button[data-delete-id]', buttons => buttons.map(b => b.getAttribute('aria-label')));
+    truthy(names.length > 0, 'there are transactions to check');
+    truthy(names.every(name => /^Delete transaction .+/.test(name)), 'transaction buttons: ' + names.join(' | '));
+    await open(p, '/pages/accounts.html');
+    const accountNames = await p.$$eval('button[data-account-id]', buttons => buttons.map(b => b.getAttribute('aria-label')));
+    truthy(accountNames.length > 0 && accountNames.every(name => /^Delete account .+/.test(name)), 'account buttons: ' + accountNames.join(' | '));
+    await open(p, '/pages/categories.html');
+    const categoryNames = await p.$$eval('button[data-name]', buttons => buttons.map(b => b.getAttribute('aria-label')));
+    truthy(categoryNames.length > 0 && categoryNames.every(name => /^Delete category .+/.test(name)), 'category buttons: ' + categoryNames.join(' | '));
+    await p.context().close();
+  });
+
   await browser.close();
 }
 
