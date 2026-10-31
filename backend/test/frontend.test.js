@@ -149,6 +149,28 @@ describe('api client against the real server', () => {
     });
   });
 
+  test('listTransactions(filters) and getSummary(filters) send the filters and leave empty ones out', async () => {
+    const { account, category } = await seed();
+    await client.createTransaction({ type: 'expense', description: 'Tea', categoryId: category.id, accountId: account.id, amount: 2.5, date: '2025-01-01' });
+    await client.createTransaction({ type: 'expense', description: 'Milk', categoryId: category.id, accountId: account.id, amount: 1.5, date: '2025-01-02' });
+
+    assert.equal((await client.listTransactions({ search: 'tea', type: '', category: '', accountId: '' })).length, 1);
+    assert.equal((await client.listTransactions({ accountId: account.id, from: '2025-01-02' })).length, 1);
+    assert.equal((await client.listTransactions({})).length, 2);
+    assert.equal((await client.listTransactions(undefined)).length, 2);
+
+    const data = await client.getSummary({ type: 'expense', search: 'milk' });
+    assert.deepEqual(plain(data.totals), { count: 1, income: 0, expense: 1.5, balance: -1.5 });
+    assert.equal((await client.getSummary()).totals.count, 2);
+
+    await assert.rejects(client.listTransactions({ from: '2025-02-30' }), error => {
+      assert.equal(error.status, 400);
+      assert.equal(error.code, 'VALIDATION_ERROR');
+      assert.match(error.message, /^From: /, 'the field is shown with a friendly label');
+      return true;
+    });
+  });
+
   test('"in use" and "duplicate" conflicts keep the server message and status 409', async () => {
     const { account, category } = await seed();
     await client.createTransaction({ type: 'expense', description: 'x', categoryId: category.id, accountId: account.id, amount: 1, date: '2025-01-01' });

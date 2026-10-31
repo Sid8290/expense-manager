@@ -15,6 +15,7 @@ const { ApiError, ok, toMinor, fromMinor } = require('./common');
 const v = require('./validate');
 const { MONEY_TYPES } = require('./accounts');
 const { CATEGORY_TYPES, MAX_CATEGORY_ID } = require('./categories');
+const { readFilters, buildWhere, FROM_FILTERED } = require('./transaction-filters');
 
 // Same order the frontend shows: newest date first, then newest created.
 // seq (an identity column) keeps ties in the order they were inserted.
@@ -23,6 +24,12 @@ const SELECT_TRANSACTIONS = `
          t.account_id, t.amount_minor, t.note, t.date, t.created_at
   FROM transactions t
   JOIN categories c ON c.id = t.category_id
+`;
+// The same columns, read through the joins the filters need (see FROM_FILTERED).
+const SELECT_TRANSACTIONS_FILTERED = `
+  SELECT t.id, t.type, t.description, t.category_id, c.name AS category_name,
+         t.account_id, t.amount_minor, t.note, t.date, t.created_at
+  ${FROM_FILTERED}
 `;
 const ORDER_NEWEST = 'ORDER BY t.date DESC, t.created_at DESC, t.seq ASC';
 
@@ -103,8 +110,25 @@ async function allTransactions() {
   return rows.map(toTransaction);
 }
 
-async function list() {
-  return ok(await allTransactions());
+// GET /api/transactions. Without a query string this is the full list, as
+// before. The optional filters and paging are described in
+// transaction-filters.js; the result keeps the same order either way.
+async function list({ req }) {
+  const filters = readFilters(req.query, { paging: true });
+  const { where, params } = buildWhere(filters);
+
+  let sql = `${SELECT_TRANSACTIONS_FILTERED} ${where} ${ORDER_NEWEST}`;
+  if (filters.limit !== undefined) {
+    params.push(filters.limit);
+    sql += ` LIMIT $${params.length}`;
+  }
+  if (filters.offset !== undefined) {
+    params.push(filters.offset);
+    sql += ` OFFSET $${params.length}`;
+  }
+
+  const { rows } = await db.query(sql, params);
+  return ok(rows.map(toTransaction));
 }
 
 // Writes one transaction. The caller has already validated it (readBody,

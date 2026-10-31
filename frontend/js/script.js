@@ -918,40 +918,50 @@ function fillFilterOptions() {
   );
 }
 
-function getFilteredTransactions() {
-  const search = document.getElementById('filter-search').value.trim().toLowerCase();
+// The filter form's values, in the form the API understands (empty = no filter).
+function readTransactionFilters() {
   const type = document.getElementById('filter-type').value;
-  const category = document.getElementById('filter-category').value;
-  const accountId = document.getElementById('filter-account').value;
-  const accounts = getAccounts();
 
-  return sortByNewest(getTransactions()).filter(item => {
-    if (type !== 'all' && item.type !== type) return false;
-    if (category && item.category !== category) return false;
-    if (accountId && item.accountId !== accountId) return false;
-
-    if (search) {
-      const text = [
-        item.description,
-        item.category,
-        item.note || '',
-        getAccountName(accounts, item.accountId),
-        String(item.amount)
-      ].join(' ').toLowerCase();
-
-      return text.includes(search);
-    }
-
-    return true;
-  });
+  return {
+    search: document.getElementById('filter-search').value.trim(),
+    type: type === 'all' ? '' : type,
+    category: document.getElementById('filter-category').value,
+    accountId: document.getElementById('filter-account').value
+  };
 }
 
-function renderTransactionTable() {
+// Each call gets a number. If the user changes a filter while an answer is
+// still on its way, the older answer arrives late and is ignored.
+let transactionRequestNumber = 0;
+
+// The server does the filtering and adds up the totals (GET /api/transactions
+// and GET /api/summary with the same filters); this only draws the answer.
+async function renderTransactionTable() {
   const body = document.getElementById('transactions-body');
   const summary = document.getElementById('transaction-summary');
   const accounts = getAccounts();
   const allCount = getTransactions().length;
-  const list = getFilteredTransactions();
+  const requestNumber = ++transactionRequestNumber;
+  const filters = readTransactionFilters();
+
+  let list;
+  let totals;
+
+  try {
+    [list, { totals }] = await Promise.all([Api.listTransactions(filters), Api.getSummary(filters)]);
+  } catch (error) {
+    if (requestNumber !== transactionRequestNumber) {
+      return;
+    }
+
+    body.innerHTML = `<tr><td colspan="8" class="empty-message">${escapeHTML(errorText(error))}</td></tr>`;
+    summary.textContent = '';
+    return;
+  }
+
+  if (requestNumber !== transactionRequestNumber) {
+    return; // a newer filter change has been made since
+  }
 
   if (list.length === 0) {
     const message = allCount > 0
@@ -976,9 +986,15 @@ function renderTransactionTable() {
     </tr>
   `).join('');
 
-  const totals = getTotals(list);
+  summary.textContent = `Showing ${totals.count} of ${allCount} transactions | Income: ${formatCurrency(totals.income)} | Expenses: ${formatCurrency(totals.expense)}`;
+}
 
-  summary.textContent = `Showing ${list.length} of ${allCount} transactions | Income: ${formatCurrency(totals.income)} | Expenses: ${formatCurrency(totals.expense)}`;
+// Typing in the search box would otherwise send a request per key press.
+let transactionFilterTimer = null;
+
+function renderTransactionTableSoon() {
+  clearTimeout(transactionFilterTimer);
+  transactionFilterTimer = setTimeout(renderTransactionTable, 150);
 }
 
 function refreshTransactionsPage() {
@@ -1106,7 +1122,9 @@ function initTransactions() {
     document.getElementById('navbar-search').value = initialSearch;
   }
 
-  renderTransactionTable();
+  // Drawn from the server's answer. startPage() waits for it, so the page is not
+  // shown with a placeholder table first.
+  const firstRender = renderTransactionTable();
 
   typeSelect.addEventListener('change', fillCategoryOptions);
   addForm.addEventListener('submit', handleAddTransaction);
@@ -1116,7 +1134,7 @@ function initTransactions() {
     renderTransactionTable();
   });
 
-  filterForm.addEventListener('input', renderTransactionTable);
+  filterForm.addEventListener('input', renderTransactionTableSoon);
 
   document.getElementById('filter-clear').addEventListener('click', () => {
     filterForm.reset();
@@ -1125,6 +1143,8 @@ function initTransactions() {
   });
 
   document.getElementById('transactions-body').addEventListener('click', handleDeleteTransaction);
+
+  return firstRender;
 }
 
 function renderCategories() {
@@ -2327,7 +2347,7 @@ async function startPage() {
   const needsData = page !== 'settings';
 
   if (!needsData && !pageInitialized) {
-    initialize();
+    await initialize();
     pageInitialized = true;
   }
 
@@ -2362,7 +2382,7 @@ async function startPage() {
   clearBanner('loading');
 
   if (!pageInitialized) {
-    initialize();
+    await initialize(); // an initializer may return a promise (the transactions page does)
     pageInitialized = true;
   }
 

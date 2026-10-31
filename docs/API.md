@@ -72,7 +72,7 @@ POST /api/categories   {"name":"Groceries","type":"expense"}
 
 | Method | Path | Success | Notes |
 | --- | --- | --- | --- |
-| GET | `/api/transactions` | 200, list | Newest `date` first, then newest `createdAt` (the frontend's order) |
+| GET | `/api/transactions` | 200, list | Newest `date` first, then newest `createdAt` (the frontend's order). Optional filters: see [Filtering and summary](#filtering-and-summary-part-4) |
 | POST | `/api/transactions` | 201 + `Location` | Body below |
 | GET | `/api/transactions/:id` | 200 | |
 | PUT | `/api/transactions/:id` | 200 | Same fields as POST except `id` and `createdAt` (which never change) |
@@ -92,6 +92,35 @@ POST /api/transactions   (amount 1.234, income type with an expense category)
      {"field":"amount","message":"Must have at most 2 decimal places."},
      {"field":"categoryId","message":"This is an expense category, but the transaction type is income."}]}}
 ```
+
+## Filtering and summary (Part 4)
+
+`GET /api/transactions` accepts optional query parameters, and `GET /api/summary` accepts the same filters. All are optional, combine with AND, and an empty value counts as absent.
+
+| Parameter | Meaning |
+| --- | --- |
+| `type` | `income` or `expense` |
+| `categoryId` | a category id (positive whole number) |
+| `category` | a category name, exact match (a name shared by an income and an expense category matches both) |
+| `accountId` | an account id |
+| `from`, `to` | `YYYY-MM-DD`, both inclusive; may be in the future; `from` must not be after `to` |
+| `search` | text (max 100), matched ignoring case anywhere in the description, category name, note, account name or amount (written like `12.5`); `%` and `_` are ordinary characters |
+| `limit`, `offset` | paging, **list only**: `limit` 1 to 500, `offset` 0 or more; same order as the unfiltered list |
+
+Invalid, repeated or unknown parameters give `400 VALIDATION_ERROR` with every problem in `details`. An id or name that matches nothing is simply an empty result. Without any parameter the list is exactly what it was before. `/api/transactions/:id` ignores query strings.
+
+### `GET /api/summary`
+
+```json
+{
+  "filters": { "type": "expense" },
+  "totals": { "count": 7, "income": 0, "expense": 655.8, "balance": -655.8 },
+  "byCategory": [ { "categoryId": 2, "category": "Rent", "type": "expense", "total": 600, "count": 2 } ],
+  "byMonth": [ { "month": "2025-01", "income": 0, "expense": 312.8, "balance": -312.8, "count": 4 } ]
+}
+```
+
+`balance` is `income - expense` of the matching transactions (not an account balance; those are `currentBalance` on `/api/accounts`). `byCategory` lists the biggest total first (ties by name); `byMonth` lists the oldest month first. An empty result is zeros and empty lists. The sums are done by PostgreSQL on whole paise, so they are exact, and all three parts are read in one read-only `REPEATABLE READ` transaction, so they always agree with each other.
 
 ## Import and export (Stage 4)
 

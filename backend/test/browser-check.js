@@ -251,14 +251,29 @@ async function main() {
     equal(page.problems.length, 0, 'console problems: ' + page.problems.join(' | '));
   });
 
-  await check('transactions: filters and search still work on database data', async () => {
+  await check('transactions: filters and search work (the server filters; the page waits for its answer)', async () => {
+    const rows = expected => page.waitForFunction(
+      count => document.querySelectorAll('#transactions-body tr').length === count && !document.querySelector('#transactions-body .empty-message'),
+      expected
+    );
+    const requests = [];
+    page.on('request', request => { if (request.url().includes('/api/transactions?') || request.url().includes('/api/summary')) requests.push(request.url()); });
+
     await page.selectOption('#filter-type', 'income');
-    equal(await page.locator('#transactions-body tr').count(), 1, 'income rows');
+    await rows(1);
+    truthy(requests.some(url => url.includes('/api/transactions?') && url.includes('type=income')), 'the type filter was sent to the server: ' + requests.join(' '));
+    equal(await text(page, '#transaction-summary'), `Showing 1 of 2 transactions | Income: ${await money(page, 2000)} | Expenses: ${await money(page, 0)}`, 'summary for income only');
     await page.selectOption('#filter-type', 'all');
+    await rows(2);
     await page.fill('#filter-search', 'milk');
-    equal(await page.locator('#transactions-body tr').count(), 1, 'search rows');
+    await rows(1);
+    truthy(requests.some(url => url.includes('search=milk')), 'the search text was sent to the server');
+    equal(await text(page, '#transaction-summary'), `Showing 1 of 2 transactions | Income: ${await money(page, 0)} | Expenses: ${await money(page, 45.5)}`, 'summary for the search');
+    await page.fill('#filter-search', 'nothing like this');
+    await page.waitForFunction(() => document.querySelector('#transactions-body').innerText.includes('No transactions match your filters.'));
     await page.click('#filter-clear');
-    equal(await page.locator('#transactions-body tr').count(), 2, 'cleared');
+    await rows(2);
+    equal(page.problems.length, 0, 'console problems: ' + page.problems.join(' | '));
   });
 
   await check('dashboard totals equal the sums of the database records', async () => {

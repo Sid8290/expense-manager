@@ -10,6 +10,8 @@
     "test:db": "node --env-file-if-exists=.env --test backend/test/postgres-foundation.test.js",
     "test:part2": "node --env-file-if-exists=.env --test backend/test/postgres-foundation.test.js backend/test/api.test.js backend/test/server.test.js backend/test/frontend.test.js",
     "test:import": "node --env-file-if-exists=.env --test backend/test/import.test.js",
+    "test:filters": "node --env-file-if-exists=.env --test backend/test/filters.test.js",
+    "test:part4": "node --env-file-if-exists=.env --test backend/test/postgres-foundation.test.js backend/test/api.test.js backend/test/server.test.js backend/test/frontend.test.js backend/test/import.test.js backend/test/filters.test.js",
     "test:part3": "node --env-file-if-exists=.env --test backend/test/postgres-foundation.test.js backend/test/api.test.js backend/test/server.test.js backend/test/frontend.test.js backend/test/import.test.js"
   },
   "engines": {
@@ -18,5 +20,8 @@
   "dependencies": {
     "express": "^5.3.0",
     "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "playwright": "^1.64.1"
   }
 }

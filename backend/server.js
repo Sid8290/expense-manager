@@ -109,6 +109,7 @@ const apiRoutes = {
   ...require('./api/accounts').routes,
   ...require('./api/categories').routes,
   ...require('./api/transactions').routes,
+  ...require('./api/summary').routes,
   ...require('./api/importer').routes,
   ...require('./api/exporter').routes
 };
