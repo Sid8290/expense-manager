@@ -33,3 +33,4 @@ npm-debug.log*
 # Environment files / secrets
 .env
 .env.*
+!.env.example

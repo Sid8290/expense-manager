@@ -6,33 +6,38 @@
 // one a numeric id so that transactions can reference it safely and so a
 // category can be renamed. Names are unique per type, ignoring case.
 
-const { getDb } = require('../db');
+const db = require('../db');
 const { ApiError, ok } = require('./common');
 const v = require('./validate');
 
 const CATEGORY_TYPES = ['income', 'expense'];
 
+// Category ids are a 32-bit integer column. The URL validator accepts longer
+// numbers, and PostgreSQL would answer a lookup for one with a "value out of
+// range" error, so such ids are treated as "no such category" before querying.
+const MAX_CATEGORY_ID = 2147483647;
+
 function toCategory(row) {
   return { id: row.id, name: row.name, type: row.type };
 }
 
-function findCategory(id) {
-  const row = getDb().prepare('SELECT id, name, type FROM categories WHERE id = ?').get(id);
+async function findCategory(id) {
+  const { rows } = id > MAX_CATEGORY_ID ? { rows: [] } : await db.query('SELECT id, name, type FROM categories WHERE id = $1', [id]);
+  const row = rows[0];
   if (!row) throw new ApiError(404, 'NOT_FOUND', 'No category with this id.');
   return toCategory(row);
 }
 
-function countTransactions(categoryId) {
-  return getDb().prepare('SELECT COUNT(*) AS n FROM transactions WHERE category_id = ?').get(categoryId).n;
+async function countTransactions(categoryId) {
+  const { rows } = await db.query('SELECT COUNT(*) AS n FROM transactions WHERE category_id = $1', [categoryId]);
+  return rows[0].n;
 }
 
 // Same idea as accounts.js: also compare with toLowerCase() to match the frontend.
-function nameTaken(name, type, exceptId) {
+async function nameTaken(name, type, exceptId) {
   const wanted = name.toLowerCase();
-  return getDb()
-    .prepare('SELECT id, name FROM categories WHERE type = ?')
-    .all(type)
-    .some(row => row.id !== exceptId && row.name.toLowerCase() === wanted);
+  const { rows } = await db.query('SELECT id, name FROM categories WHERE type = $1', [type]);
+  return rows.some(row => row.id !== exceptId && row.name.toLowerCase() === wanted);
 }
 
 function readBody(body) {
@@ -47,77 +52,89 @@ function readBody(body) {
   return clean;
 }
 
-function allCategories() {
-  return getDb().prepare('SELECT id, name, type FROM categories ORDER BY id').all().map(toCategory);
+async function allCategories() {
+  const { rows } = await db.query('SELECT id, name, type FROM categories ORDER BY id');
+  return rows.map(toCategory);
 }
 
-function list() {
-  return ok(allCategories());
+async function list() {
+  return ok(await allCategories());
 }
 
-// Writes one category and returns its new numeric id. The caller has already
-// validated it (readBody) and checked that the name is free.
-function insertCategory(input) {
-  const result = getDb().prepare('INSERT INTO categories (name, type) VALUES (?, ?)').run(input.name, input.type);
-  return Number(result.lastInsertRowid);
+// Writes one category and returns its new numeric id (INSERT ... RETURNING).
+// The caller has already validated it (readBody) and checked that the name is free.
+async function insertCategory(input) {
+  const { rows } = await db.query(
+    'INSERT INTO categories (name, type) VALUES ($1, $2) RETURNING id',
+    [input.name, input.type]
+  );
+  return rows[0].id;
 }
 
-function get({ params }) {
-  return ok(findCategory(v.numericIdParam(params.id)));
+async function get({ params }) {
+  return ok(await findCategory(v.numericIdParam(params.id)));
 }
 
-function create({ body }) {
+async function create({ body }) {
   const input = readBody(body);
 
-  if (nameTaken(input.name, input.type)) {
-    throw new ApiError(409, 'CONFLICT', `The ${input.type} category "${input.name}" already exists.`);
-  }
+  return db.runInTransaction(async () => {
+    if (await nameTaken(input.name, input.type)) {
+      throw new ApiError(409, 'CONFLICT', `The ${input.type} category "${input.name}" already exists.`);
+    }
 
-  const id = insertCategory(input);
+    const id = await insertCategory(input);
 
-  return ok(findCategory(id), 201, { Location: `/api/categories/${id}` });
+    return ok(await findCategory(id), 201, { Location: `/api/categories/${id}` });
+  });
 }
 
 // PUT replaces name and type. Renaming is always allowed (transactions point
 // at the id, so they follow the new name). Changing the TYPE is refused while
 // transactions use the category, because their type must match it.
-function update({ params, body }) {
+async function update({ params, body }) {
   const id = v.numericIdParam(params.id);
-  const current = findCategory(id);
-  const input = readBody(body);
 
-  if (nameTaken(input.name, input.type, id)) {
-    throw new ApiError(409, 'CONFLICT', `The ${input.type} category "${input.name}" already exists.`);
-  }
+  return db.runInTransaction(async () => {
+    const current = await findCategory(id);
+    const input = readBody(body);
 
-  const used = countTransactions(id);
-  if (used > 0 && input.type !== current.type) {
-    throw new ApiError(
-      409,
-      'IN_USE',
-      `"${current.name}" is used by ${v.pluralize(used, 'transaction')}, so its type cannot be changed.`
-    );
-  }
+    if (await nameTaken(input.name, input.type, id)) {
+      throw new ApiError(409, 'CONFLICT', `The ${input.type} category "${input.name}" already exists.`);
+    }
 
-  getDb().prepare('UPDATE categories SET name = ?, type = ? WHERE id = ?').run(input.name, input.type, id);
-  return ok(findCategory(id));
+    const used = await countTransactions(id);
+    if (used > 0 && input.type !== current.type) {
+      throw new ApiError(
+        409,
+        'IN_USE',
+        `"${current.name}" is used by ${v.pluralize(used, 'transaction')}, so its type cannot be changed.`
+      );
+    }
+
+    await db.query('UPDATE categories SET name = $1, type = $2 WHERE id = $3', [input.name, input.type, id]);
+    return ok(await findCategory(id));
+  });
 }
 
-function remove({ params }) {
+async function remove({ params }) {
   const id = v.numericIdParam(params.id);
-  const category = findCategory(id);
 
-  const used = countTransactions(id);
-  if (used > 0) {
-    throw new ApiError(
-      409,
-      'IN_USE',
-      `"${category.name}" is used by ${v.pluralize(used, 'transaction')} and cannot be deleted.`
-    );
-  }
+  return db.runInTransaction(async () => {
+    const category = await findCategory(id);
 
-  getDb().prepare('DELETE FROM categories WHERE id = ?').run(id);
-  return ok({ id });
+    const used = await countTransactions(id);
+    if (used > 0) {
+      throw new ApiError(
+        409,
+        'IN_USE',
+        `"${category.name}" is used by ${v.pluralize(used, 'transaction')} and cannot be deleted.`
+      );
+    }
+
+    await db.query('DELETE FROM categories WHERE id = $1', [id]);
+    return ok({ id });
+  });
 }
 
 const routes = {
@@ -125,4 +142,4 @@ const routes = {
   '/api/categories/:id': { GET: get, PUT: update, DELETE: remove }
 };
 
-module.exports = { routes, CATEGORY_TYPES, readBody, nameTaken, insertCategory, allCategories };
+module.exports = { routes, CATEGORY_TYPES, MAX_CATEGORY_ID, readBody, nameTaken, insertCategory, allCategories };

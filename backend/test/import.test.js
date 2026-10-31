@@ -5,26 +5,26 @@
 // Run with:  npm test
 //
 // Like api.test.js, this runs the real HTTP server inside the test process on
-// a random port, connected to a throw-away SQLite file in the OS temp folder.
-// Your real database and your browser's localStorage are never touched.
+// a random port, connected to a throw-away PostgreSQL schema (em_test_<random>)
+// inside the TEST_DATABASE_URL database (see helpers/pg-test-db.js). Your real
+// database and your browser's localStorage are never touched.
 
 const { test, describe, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
 
 const db = require('../db');
+const { TEST_URL, createTestSchema, admin } = require('./helpers/pg-test-db');
 const { createServer } = require('../server');
 const { MAX_RECORDS } = require('../api/importer');
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'expense-import-test-'));
+let testSchema;
 let server;
 let port;
 
 before(async () => {
-  db.initDatabase(path.join(tmpRoot, 'import.db'));
+  testSchema = await createTestSchema();
+  await db.initDatabase({ connectionString: TEST_URL, schema: testSchema.schema });
   server = createServer();
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   port = server.address().port;
@@ -35,13 +35,18 @@ after(async () => {
     server.closeAllConnections();
     server.close(() => resolve());
   });
-  db.closeDatabase();
-  fs.rmSync(tmpRoot, { recursive: true, force: true });
+  await db.closeDatabase();
+  await testSchema.drop();
 });
 
-beforeEach(() => {
-  db.getDb().exec('DROP TRIGGER IF EXISTS boom;');
-  db.getDb().exec('DELETE FROM transactions; DELETE FROM categories; DELETE FROM accounts; DELETE FROM sqlite_sequence;');
+beforeEach(async () => {
+  await db.query('DROP TRIGGER IF EXISTS boom ON transactions');
+  await db.query('DROP FUNCTION IF EXISTS boom_fail()');
+  // Children first (foreign keys). Identity counters are left alone: PostgreSQL
+  // never rewinds them, and no test depends on the numbers.
+  await db.query('DELETE FROM transactions');
+  await db.query('DELETE FROM categories');
+  await db.query('DELETE FROM accounts');
 });
 
 // ---------------------------------------------------------------------------
@@ -94,18 +99,17 @@ const simple = () => backup({ accounts: [acc()], categories: [cat('Food')], tran
 const preview = payload => call('POST', '/api/import/preview', payload);
 const importNow = payload => call('POST', '/api/import', { ...payload, confirm: true });
 
-const counts = () => {
-  const n = table => db.getDb().prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n;
-  return { accounts: n('accounts'), categories: n('categories'), transactions: n('transactions') };
+const counts = async () => {
+  const n = async table => Number((await db.query(`SELECT COUNT(*) AS n FROM ${table}`)).rows[0].n);
+  return { accounts: await n('accounts'), categories: await n('categories'), transactions: await n('transactions') };
 };
 const snapshot = async () => (await call('GET', '/api/export')).json.data.data;
-const sequences = () => db.getDb().prepare('SELECT name, seq FROM sqlite_sequence ORDER BY name').all();
 
 function assertError(response, status, code) {
   assert.equal(response.status, status, response.text);
   assert.equal(response.json.ok, false);
   assert.equal(response.json.error.code, code, response.text);
-  assert.doesNotMatch(response.text, /node_modules|\.js:\d|\bat .*\(|expense-import-test|SQLITE|sqlite|boom/i, 'nothing internal leaked');
+  assert.doesNotMatch(response.text, /node_modules|\.js:\d|\bat .*\(|em_test_|SQLITE|sqlite|postgres|SQLSTATE|violates|pg_|boom/i, 'nothing internal leaked');
 }
 
 // `items` is the list from the report, e.g. report.items.accounts.
@@ -118,7 +122,7 @@ const find = (items, outcome) => items.filter(item => item.outcome === outcome);
 describe('preview', () => {
   test('reports what would happen and changes nothing at all', async () => {
     await call('POST', '/api/accounts', { name: 'Existing', type: 'bank', balance: 5 });
-    const before = { counts: counts(), data: await snapshot(), sequences: sequences() };
+    const before = { counts: await counts(), data: await snapshot() };
 
     const response = await preview(simple());
     assert.equal(response.status, 200, response.text);
@@ -131,9 +135,8 @@ describe('preview', () => {
     assert.deepEqual(report.databaseBefore, { accounts: 1, categories: 0, transactions: 0 });
     assert.deepEqual(report.databaseAfter, { accounts: 2, categories: 1, transactions: 1 }, 'what it WOULD be');
 
-    assert.deepEqual(counts(), before.counts);
+    assert.deepEqual(await counts(), before.counts);
     assert.deepEqual(await snapshot(), before.data);
-    assert.deepEqual(sequences(), before.sequences, 'not even the id counters moved');
   });
 
   test('is repeatable and gives the same answer each time', async () => {
@@ -149,7 +152,7 @@ describe('confirmation', () => {
       const response = await call('POST', '/api/import', { ...simple(), confirm });
       assertError(response, 400, 'CONFIRMATION_REQUIRED');
     }
-    assert.deepEqual(counts(), { accounts: 0, categories: 0, transactions: 0 });
+    assert.deepEqual(await counts(), { accounts: 0, categories: 0, transactions: 0 });
   });
 
   test('only POST is allowed on the import routes; export is GET only', async () => {
@@ -228,8 +231,8 @@ describe('importing valid data', () => {
     const stored = (await snapshot()).transactions;
     for (const [i, amount] of amounts.entries()) {
       assert.equal(stored.find(t => t.id === `txn-${i}`).amount, amount, `amount ${amount}`);
-      const row = db.getDb().prepare('SELECT amount_minor FROM transactions WHERE id = ?').get(`txn-${i}`);
-      assert.equal(row.amount_minor, Math.round(amount * 100));
+      const { rows } = await db.query('SELECT amount_minor FROM transactions WHERE id = $1', [`txn-${i}`]);
+      assert.equal(rows[0].amount_minor, Math.round(amount * 100));
     }
   });
 
@@ -269,7 +272,7 @@ describe('importing valid data', () => {
       transactions: [{ ...txn(), tags: ['a'] }]
     }))).json.data;
     assert.equal(report.complete, true);
-    assert.deepEqual(counts(), { accounts: 1, categories: 1, transactions: 1 });
+    assert.deepEqual(await counts(), { accounts: 1, categories: 1, transactions: 1 });
   });
 
   test('old defaults: unused ones are not imported, used ones are', async () => {
@@ -300,7 +303,7 @@ describe('importing valid data', () => {
   test('an empty backup is valid and imports nothing', async () => {
     const report = (await importNow(backup())).json.data;
     assert.equal(report.complete, true);
-    assert.deepEqual(counts(), { accounts: 0, categories: 0, transactions: 0 });
+    assert.deepEqual(await counts(), { accounts: 0, categories: 0, transactions: 0 });
   });
 
   test('a large import works (20,000 transactions, the documented limit) and is verified', async () => {
@@ -311,7 +314,7 @@ describe('importing valid data', () => {
     assert.equal(response.status, 200, response.text.slice(0, 300));
     assert.equal(response.json.data.counts.transactions.imported, MAX_RECORDS.transactions);
     assert.equal(response.json.data.verification.recordsChecked, MAX_RECORDS.transactions + 2);
-    assert.equal(counts().transactions, MAX_RECORDS.transactions);
+    assert.equal((await counts()).transactions, MAX_RECORDS.transactions);
     assert.ok(Date.now() - started < 60000, 'finished in reasonable time');
   });
 });
@@ -431,7 +434,7 @@ describe('unresolved references (never guessed)', () => {
     assert.equal(report.counts.accounts.rejected, 1);
     assert.equal(report.counts.transactions.unresolvedReferences, 1);
     assert.match(report.items.transactions[0].reason, /was not imported/);
-    assert.deepEqual(counts(), { accounts: 0, categories: 1, transactions: 0 });
+    assert.deepEqual(await counts(), { accounts: 0, categories: 1, transactions: 0 });
   });
 
   test('a transaction with a non-text category or a bad type is rejected, not crashed on', async () => {
@@ -463,7 +466,7 @@ describe('duplicates inside the import', () => {
     assert.equal(report.counts.transactions.imported, 1);
     assert.equal(report.counts.transactions.duplicateInFile, 1);
     assert.equal(report.complete, true);
-    assert.deepEqual(counts(), { accounts: 1, categories: 1, transactions: 1 });
+    assert.deepEqual(await counts(), { accounts: 1, categories: 1, transactions: 1 });
   });
 
   test('the same id with DIFFERENT data is ambiguous: all of them are rejected, nothing is guessed', async () => {
@@ -475,7 +478,7 @@ describe('duplicates inside the import', () => {
     assert.equal(report.counts.accounts.rejected, 2);
     assert.equal(report.counts.accounts.conflicts, 2);
     assert.equal(report.counts.transactions.imported, 0);
-    assert.deepEqual(counts(), { accounts: 0, categories: 1, transactions: 0 });
+    assert.deepEqual(await counts(), { accounts: 0, categories: 1, transactions: 0 });
   });
 
   test('two genuine transactions that look identical but have different ids are BOTH imported', async () => {
@@ -485,7 +488,7 @@ describe('duplicates inside the import', () => {
     }))).json.data;
     assert.equal(report.counts.transactions.imported, 2);
     assert.equal(report.counts.transactions.duplicateInFile, 0);
-    assert.equal(counts().transactions, 2);
+    assert.equal((await counts()).transactions, 2);
   });
 
   test('two accounts with the same name but different ids: the second is a conflict', async () => {
@@ -516,7 +519,7 @@ describe('conflicts with what is already in the database', () => {
     const report = (await importNow(backup({ accounts: [acc()] }))).json.data;
     assert.equal(report.counts.accounts.conflicts, 1);
     assert.match(report.items.accounts[0].reason, /Rename/);
-    assert.equal(counts().accounts, 1);
+    assert.equal((await counts()).accounts, 1);
   });
 
   test('a transaction id that exists with different data is a conflict; it is not changed', async () => {
@@ -547,7 +550,7 @@ describe('conflicts with what is already in the database', () => {
     const t = (await call('POST', '/api/transactions', { type: 'expense', description: 'June rent', categoryId: c.id, accountId: a.id, amount: 500, date: '2025-06-01' })).json.data;
     const report = (await importNow(simple())).json.data;
     assert.equal(report.complete, true);
-    assert.deepEqual(counts(), { accounts: 2, categories: 2, transactions: 2 });
+    assert.deepEqual(await counts(), { accounts: 2, categories: 2, transactions: 2 });
     const stored = await snapshot();
     assert.deepEqual(stored.accounts.find(x => x.id === a.id).balance, 7);
     assert.deepEqual(stored.transactions.find(x => x.id === t.id), t);
@@ -567,7 +570,7 @@ describe('repeating an import', () => {
     });
     const first = (await importNow(payload)).json.data;
     assert.equal(first.counts.transactions.imported, 3);
-    const before = { data: await snapshot(), sequences: sequences() };
+    const before = { data: await snapshot() };
 
     const second = (await importNow(payload)).json.data;
     assert.equal(second.complete, true);
@@ -578,11 +581,10 @@ describe('repeating an import', () => {
     assert.equal(second.counts.categories.duplicateInDatabase, 2);
     assert.equal(second.counts.transactions.duplicateInDatabase, 3);
     assert.deepEqual((await snapshot()), before.data);
-    assert.deepEqual(sequences(), before.sequences);
 
     const third = (await importNow(payload)).json.data;
     assert.equal(third.counts.transactions.duplicateInDatabase, 3);
-    assert.deepEqual(counts(), { accounts: 2, categories: 2, transactions: 3 });
+    assert.deepEqual(await counts(), { accounts: 2, categories: 2, transactions: 3 });
   });
 
   test('retry after a partial import: only what was missing is added', async () => {
@@ -598,7 +600,7 @@ describe('repeating an import', () => {
     assert.equal(second.complete, true);
     assert.equal(second.counts.transactions.imported, 1);
     assert.equal(second.counts.transactions.duplicateInDatabase, 1);
-    assert.deepEqual(counts(), { accounts: 1, categories: 1, transactions: 2 });
+    assert.deepEqual(await counts(), { accounts: 1, categories: 1, transactions: 2 });
   });
 
   test('the import re-checks the CURRENT database: a stale preview is not trusted', async () => {
@@ -622,10 +624,21 @@ describe('repeating an import', () => {
 // ---------------------------------------------------------------------------
 
 describe('failure during the import', () => {
-  const FAIL_TRIGGER = `
-    CREATE TRIGGER boom BEFORE INSERT ON transactions WHEN NEW.description = 'BOOM'
-    BEGIN SELECT RAISE(ABORT, 'boom: simulated disk failure'); END;
-  `;
+  // A trigger that makes PostgreSQL reject one particular transaction row, the
+  // way a disk or constraint failure in the middle of an import would.
+  const installFailTrigger = async () => {
+    await db.query(`
+      CREATE FUNCTION boom_fail() RETURNS trigger AS $$
+      BEGIN RAISE EXCEPTION 'boom: simulated failure'; END
+      $$ LANGUAGE plpgsql`);
+    await db.query(`
+      CREATE TRIGGER boom BEFORE INSERT ON transactions
+      FOR EACH ROW WHEN (NEW.description = 'BOOM') EXECUTE FUNCTION boom_fail()`);
+  };
+  const removeFailTrigger = async () => {
+    await db.query('DROP TRIGGER boom ON transactions');
+    await db.query('DROP FUNCTION boom_fail()');
+  };
   const payloadWithBomb = () => backup({
     accounts: [acc()], categories: [cat('Food')],
     transactions: [txn({ id: 't1' }), txn({ id: 't2' }), txn({ id: 't3', description: 'BOOM' }), txn({ id: 't4' })]
@@ -633,49 +646,154 @@ describe('failure during the import', () => {
 
   test('a database error rolls back EVERYTHING, tells the truth, and leaks nothing', async () => {
     await call('POST', '/api/accounts', { name: 'Already here', type: 'bank', balance: 3 });
-    const before = { counts: counts(), data: await snapshot(), sequences: sequences() };
-    db.getDb().exec(FAIL_TRIGGER);
+    const before = { counts: await counts(), data: await snapshot() };
+    await installFailTrigger();
 
     const response = await importNow(payloadWithBomb());
     assertError(response, 500, 'IMPORT_FAILED');
     assert.match(response.json.error.message, /nothing was saved/i);
 
-    assert.deepEqual(counts(), before.counts, 'the account, the category and t1/t2 were all rolled back');
+    assert.deepEqual(await counts(), before.counts, 'the account, the category and t1/t2 were all rolled back');
     assert.deepEqual(await snapshot(), before.data);
-    assert.deepEqual(sequences(), before.sequences);
 
     // The server is still healthy, and after the problem is gone the same import works.
     assert.equal((await call('GET', '/api/health')).status, 200);
-    db.getDb().exec('DROP TRIGGER boom');
+    await removeFailTrigger();
     const retry = (await importNow(payloadWithBomb())).json.data;
     assert.equal(retry.counts.transactions.imported, 4);
-    assert.equal(counts().transactions, 4);
+    assert.equal((await counts()).transactions, 4);
   });
 
   test('a preview that hits the same error reports it and changes nothing', async () => {
-    db.getDb().exec(FAIL_TRIGGER);
+    await installFailTrigger();
     assertError(await preview(payloadWithBomb()), 500, 'PREVIEW_FAILED');
-    assert.deepEqual(counts(), { accounts: 0, categories: 0, transactions: 0 });
+    assert.deepEqual(await counts(), { accounts: 0, categories: 0, transactions: 0 });
   });
 });
 
 describe('runInTransaction (database helper)', () => {
-  test('commits on success, rolls back on error, and a dry run never keeps anything', () => {
-    const insert = () => db.getDb().prepare("INSERT INTO categories (name, type) VALUES ('T', 'income')").run();
+  test('commits on success, rolls back on error, and a dry run never keeps anything', async () => {
+    const insert = name => db.query("INSERT INTO categories (name, type) VALUES ($1, 'income')", [name]);
 
-    db.runInTransaction(insert);
-    assert.equal(counts().categories, 1);
+    await db.runInTransaction(() => insert('T'));
+    assert.equal((await counts()).categories, 1);
 
-    assert.throws(() => db.runInTransaction(() => { insert2(); throw new Error('stop'); }), /stop/);
-    function insert2() { db.getDb().prepare("INSERT INTO categories (name, type) VALUES ('U', 'income')").run(); }
-    assert.equal(counts().categories, 1, 'rolled back');
+    await assert.rejects(db.runInTransaction(async () => { await insert('U'); throw new Error('stop'); }), /stop/);
+    assert.equal((await counts()).categories, 1, 'rolled back');
 
-    const returned = db.runInTransaction(() => { insert2(); return 'value'; }, { dryRun: true });
+    const returned = await db.runInTransaction(async () => { await insert('U'); return 'value'; }, { dryRun: true });
     assert.equal(returned, 'value');
-    assert.equal(counts().categories, 1, 'dry run rolled back');
+    assert.equal((await counts()).categories, 1, 'dry run rolled back');
 
-    db.runInTransaction(insert2);
-    assert.equal(counts().categories, 2, 'the connection is still usable afterwards');
+    await db.runInTransaction(() => insert('U'));
+    assert.equal((await counts()).categories, 2, 'the connection is still usable afterwards');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PostgreSQL-specific behaviour
+// ---------------------------------------------------------------------------
+
+describe('PostgreSQL behaviour', () => {
+  test('two imports started at the same time are serialized: one imports, the other sees duplicates', async () => {
+    const payload = backup({
+      accounts: [acc()], categories: [cat('Food')],
+      transactions: Array.from({ length: 50 }, (_, i) => txn({ id: `c-${i}`, createdAt: 1000 + i }))
+    });
+    const [a, b] = await Promise.all([importNow(payload), importNow(payload)]);
+    assert.equal(a.status, 200, a.text);
+    assert.equal(b.status, 200, b.text);
+
+    const imported = [a, b].map(r => r.json.data.counts.transactions.imported).sort((x, y) => x - y);
+    const duplicates = [a, b].map(r => r.json.data.counts.transactions.duplicateInDatabase).sort((x, y) => x - y);
+    assert.deepEqual(imported, [0, 50], 'exactly one of them imported the records');
+    assert.deepEqual(duplicates, [0, 50], 'the other found them already stored');
+    assert.deepEqual(await counts(), { accounts: 1, categories: 1, transactions: 50 });
+  });
+
+  test('a preview that runs alongside a real import never fails and never keeps anything itself', async () => {
+    const payload = backup({ accounts: [acc()], categories: [cat('Food')], transactions: [txn()] });
+    const [p, i] = await Promise.all([preview(payload), importNow(payload)]);
+    assert.equal(p.status, 200, p.text);
+    assert.equal(i.status, 200, i.text);
+    assert.deepEqual(await counts(), { accounts: 1, categories: 1, transactions: 1 });
+  });
+
+  test('previews and rolled-back imports leave the normal API fully usable (id counters may skip, which is harmless)', async () => {
+    await preview(simple());
+    await preview(simple());
+    const created = await call('POST', '/api/categories', { name: 'After previews', type: 'expense' });
+    assert.equal(created.status, 201, created.text);
+    assert.ok(Number.isInteger(created.json.data.id));
+    assert.deepEqual(await counts(), { accounts: 0, categories: 1, transactions: 0 });
+  });
+
+  test('imported records behave like any other record in the normal API', async () => {
+    await importNow(simple());
+    const transactionId = (await call('GET', '/api/transactions')).json.data[0].id;
+    const accountBefore = (await call('GET', '/api/accounts/acc-1')).json.data;
+    assert.equal(accountBefore.currentBalance, 87.5, '100 - 12.5');
+
+    // edit moves the balance, delete restores it, and the account is protected while it is in use
+    const edit = await call('PUT', `/api/transactions/${transactionId}`, {
+      type: 'expense', description: 'Tea', categoryId: (await call('GET', '/api/categories')).json.data[0].id,
+      accountId: 'acc-1', amount: 20, note: '', date: '2025-01-10'
+    });
+    assert.equal(edit.status, 200, edit.text);
+    assert.equal((await call('GET', '/api/accounts/acc-1')).json.data.currentBalance, 80);
+    assertError(await call('DELETE', '/api/accounts/acc-1'), 409, 'IN_USE');
+    assert.equal((await call('DELETE', `/api/transactions/${transactionId}`)).status, 200);
+    assert.equal((await call('GET', '/api/accounts/acc-1')).json.data.currentBalance, 100);
+    assert.equal((await call('DELETE', '/api/accounts/acc-1')).status, 200);
+  });
+
+  test('a database failure on a category insert, after other records were written, rolls everything back', async () => {
+    // A trigger rejects one category name, after the account and an earlier category were already written.
+    await db.query(`
+      CREATE FUNCTION boom_fail() RETURNS trigger AS $$
+      BEGIN RAISE EXCEPTION 'boom'; END $$ LANGUAGE plpgsql`);
+    await db.query(`
+      CREATE TRIGGER boom BEFORE INSERT ON categories
+      FOR EACH ROW WHEN (NEW.name = 'Explode') EXECUTE FUNCTION boom_fail()`);
+    try {
+      const quiet = console.error;
+      console.error = () => {};
+      let response;
+      try {
+        response = await importNow(backup({
+          accounts: [acc()], categories: [cat('Fine'), cat('Explode')], transactions: [txn({ category: 'Fine' })]
+        }));
+      } finally {
+        console.error = quiet;
+      }
+      assertError(response, 500, 'IMPORT_FAILED');
+      assert.deepEqual(await counts(), { accounts: 0, categories: 0, transactions: 0 });
+    } finally {
+      await db.query('DROP TRIGGER boom ON categories');
+      await db.query('DROP FUNCTION boom_fail()');
+    }
+  });
+
+  test('export is one consistent snapshot even while an import is writing', async () => {
+    const payload = backup({
+      accounts: [acc()], categories: [cat('Food')],
+      transactions: Array.from({ length: 2000 }, (_, i) => txn({ id: `s-${i}`, createdAt: 1000 + i }))
+    });
+    const importing = importNow(payload);
+    const exports = [];
+    for (let i = 0; i < 5; i += 1) exports.push(call('GET', '/api/export'));
+    await importing;
+    for (const response of await Promise.all(exports)) {
+      assert.equal(response.status, 200, response.text);
+      const { counts: c, data } = response.json.data;
+      // never a transaction without its account/category, never counts that disagree with the lists
+      assert.equal(c.transactions, data.transactions.length);
+      if (c.transactions > 0) {
+        assert.equal(c.accounts, 1);
+        assert.equal(c.categories, 1);
+      }
+      assert.ok(c.transactions === 0 || c.transactions === 2000, `all-or-nothing, got ${c.transactions}`);
+    }
   });
 });
 
@@ -688,7 +806,7 @@ describe('bad import input', () => {
     for (const make of [preview, importNow]) {
       assertError(await make(body), status, code);
     }
-    assert.deepEqual(counts(), { accounts: 0, categories: 0, transactions: 0 });
+    assert.deepEqual(await counts(), { accounts: 0, categories: 0, transactions: 0 });
   };
 
   test('malformed JSON, an empty body and a non-object body are refused', async () => {
@@ -769,7 +887,7 @@ describe('bad import input', () => {
     const stored = await snapshot();
     assert.equal(stored.accounts[0].name, evil);
     assert.equal(stored.transactions[0].description, '${process.exit(1)}');
-    assert.equal(counts().accounts, 1);
+    assert.equal((await counts()).accounts, 1);
   });
 });
 
@@ -828,21 +946,22 @@ describe('GET /api/export', () => {
 
   test('is read-only and leaks no internals', async () => {
     await importNow(simple());
-    const before = { counts: counts(), sequences: sequences() };
+    const before = { counts: await counts() };
     const response = await call('GET', '/api/export');
-    assert.deepEqual(counts(), before.counts);
-    assert.deepEqual(sequences(), before.sequences);
+    assert.deepEqual(await counts(), before.counts);
     assert.doesNotMatch(response.text, /expense-import-test|node_modules|sqlite|balance_minor|amount_minor|\.db\b/i);
     assert.deepEqual(Object.keys(response.json.data).sort(), ['counts', 'data', 'exportedAt', 'format', 'version']);
   });
 
   test('fails honestly when the database is unavailable, then recovers', async () => {
-    const path2 = path.join(tmpRoot, 'import-2.db');
-    db.closeDatabase();
+    await db.closeDatabase();
+    const quiet = console.error;
+    console.error = () => {}; // the server logs the failure; keep the test output clean
     try {
       assertError(await call('GET', '/api/export'), 500, 'INTERNAL_ERROR');
     } finally {
-      db.initDatabase(path2);
+      console.error = quiet;
+      await db.initDatabase({ connectionString: TEST_URL, schema: testSchema.schema });
     }
     assert.equal((await call('GET', '/api/export')).status, 200);
   });

@@ -8,8 +8,10 @@
 //
 // How it stays safe
 // -----------------
-// * ONE SQLite transaction. Every record is processed inside it. If anything
-//   unexpected goes wrong, everything is rolled back and nothing is saved.
+// * ONE PostgreSQL transaction (one connection, BEGIN ... COMMIT). Every record
+//   is processed inside it. If anything unexpected goes wrong, everything is
+//   rolled back and nothing is saved. A transaction-level advisory lock makes
+//   imports run one at a time, so two imports of the same file cannot race.
 // * The preview runs exactly the same code and then rolls back. It can
 //   therefore never promise something the real import would not do.
 // * The real import plans again against the database as it is NOW. A preview
@@ -25,7 +27,7 @@
 // * Every record that was written is read back and compared before the
 //   transaction is committed.
 
-const { runInTransaction, getDb } = require('../db');
+const db = require('../db');
 const { ApiError, ok, toMinor } = require('./common');
 const accounts = require('./accounts');
 const categories = require('./categories');
@@ -60,6 +62,10 @@ const OLD_DEFAULT_CATEGORIES = [
   { name: 'Other Income', type: 'income' }
 ];
 
+// Arbitrary constant that identifies the import lock (see planAndWrite).
+// It differs from the migration lock id in db.js.
+const IMPORT_LOCK_ID = 7243001;
+
 // Possible outcomes for each record.
 const IMPORTED = 'imported';
 const DUPLICATE_DATABASE = 'duplicate-in-database'; // same id and identical data already stored
@@ -71,6 +77,14 @@ const UNRESOLVED = 'unresolved-reference'; // refers to an account/category that
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
+
+// Runs `work(record, index)` for each record, one after another (they share one
+// database connection, so they must not overlap).
+async function eachRecord(records, work) {
+  for (const [index, raw] of records.entries()) {
+    await work(raw, index);
+  }
+}
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -89,9 +103,9 @@ function reasonFrom(error) {
 }
 
 // Runs a validator and returns { value } or { reason } instead of throwing.
-function validated(check) {
+async function validated(check) {
   try {
-    return { value: check() };
+    return { value: await check() };
   } catch (error) {
     if (error instanceof ApiError) return { reason: reasonFrom(error) };
     throw error;
@@ -221,20 +235,27 @@ function record(section, { index, id, label, outcome, reason, conflict = false }
   section.items.push(item);
 }
 
-function databaseCounts() {
-  const db = getDb();
-  const count = table => db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n;
-  return { accounts: count('accounts'), categories: count('categories'), transactions: count('transactions') };
+// The three table names are constants, never user input.
+async function databaseCounts() {
+  const { rows } = await db.query(`
+    SELECT (SELECT COUNT(*) FROM accounts) AS accounts,
+           (SELECT COUNT(*) FROM categories) AS categories,
+           (SELECT COUNT(*) FROM transactions) AS transactions
+  `);
+  return { accounts: rows[0].accounts, categories: rows[0].categories, transactions: rows[0].transactions };
 }
 
 // ---------------------------------------------------------------------------
-// The import itself (runs inside one SQLite transaction)
+// The import itself (runs inside one PostgreSQL transaction)
 // ---------------------------------------------------------------------------
 
-function planAndWrite(data) {
-  const db = getDb();
+async function planAndWrite(data) {
+  // Imports run one at a time. The lock is released at COMMIT/ROLLBACK, and a
+  // second import waits here, then plans against what the first one saved.
+  await db.query('SELECT pg_advisory_xact_lock($1)', [IMPORT_LOCK_ID]);
+
   const sections = { accounts: newSection(), categories: newSection(), transactions: newSection() };
-  const before = databaseCounts();
+  const before = await databaseCounts();
 
   // What the old transactions use. An unused old default is not imported, but a
   // default that transactions refer to must be, or those transactions would
@@ -257,7 +278,7 @@ function planAndWrite(data) {
   const accountRepeats = findRepeatedIds(data.accounts, sameAccountData);
   const accountState = new Map(); // legacy id -> 'ok' | 'rejected'
 
-  data.accounts.forEach((raw, index) => {
+  await eachRecord(data.accounts, async (raw, index) => {
     const item = { index, id: isPlainObject(raw) && typeof raw.id === 'string' ? raw.id : undefined };
 
     if (!isPlainObject(raw)) {
@@ -273,7 +294,7 @@ function planAndWrite(data) {
       return record(accountSection, { ...item, outcome: DUPLICATE_FILE, reason: 'Identical to an earlier account in this import.' });
     }
 
-    const check = validated(() => {
+    const check = await validated(() => {
       if (typeof raw.id !== 'string') {
         throw new ApiError(400, 'VALIDATION_ERROR', '', [{ field: 'id', message: 'This field is required.' }]);
       }
@@ -289,7 +310,9 @@ function planAndWrite(data) {
       return record(accountSection, { ...item, outcome: OLD_DEFAULT, reason: 'Unchanged default of the old version that no transaction uses.' });
     }
 
-    const existing = db.prepare('SELECT id, name, type, balance_minor FROM accounts WHERE id = ?').get(input.id);
+    const existing = (await db.query(
+      'SELECT id, name, type, balance_minor FROM accounts WHERE id = $1', [input.id]
+    )).rows[0];
     if (existing) {
       const identical = existing.name.toLowerCase() === input.name.toLowerCase()
         && existing.type === input.type
@@ -301,12 +324,12 @@ function planAndWrite(data) {
       accountState.set(input.id, 'rejected');
       return record(accountSection, { ...item, outcome: REJECTED, conflict: true, reason: 'An account with this id already exists in the database with different data. It was not changed.' });
     }
-    if (accounts.nameTaken(input.name)) {
+    if (await accounts.nameTaken(input.name)) {
       accountState.set(input.id, 'rejected');
       return record(accountSection, { ...item, outcome: REJECTED, conflict: true, reason: `Another account in the database is already named "${input.name}". Rename one of them and import again.` });
     }
 
-    accounts.insertAccount(input);
+    await accounts.insertAccount(input);
     accountState.set(input.id, 'ok');
     written.accounts.push(input);
     return record(accountSection, { ...item, outcome: IMPORTED });
@@ -317,14 +340,14 @@ function planAndWrite(data) {
   categorySection.counts.received = data.categories.length;
   const categoryIds = new Map(); // category key -> database id
 
-  data.categories.forEach((raw, index) => {
+  await eachRecord(data.categories, async (raw, index) => {
     const item = { index };
 
     if (!isPlainObject(raw)) {
       return record(categorySection, { ...item, outcome: REJECTED, reason: 'Not a record (expected an object).' });
     }
 
-    const check = validated(() => categories.readBody({ name: raw.name, type: raw.type }));
+    const check = await validated(() => categories.readBody({ name: raw.name, type: raw.type }));
     if (check.reason) {
       item.label = typeof raw.name === 'string' ? raw.name : undefined;
       return record(categorySection, { ...item, outcome: REJECTED, reason: check.reason });
@@ -341,16 +364,14 @@ function planAndWrite(data) {
     }
 
     // A category's identity in the old app is its type and name (ignoring case).
-    const existing = db
-      .prepare('SELECT id, name FROM categories WHERE type = ?')
-      .all(input.type)
-      .find(row => row.name.toLowerCase() === input.name.toLowerCase());
+    const sameType = await db.query('SELECT id, name FROM categories WHERE type = $1', [input.type]);
+    const existing = sameType.rows.find(row => row.name.toLowerCase() === input.name.toLowerCase());
     if (existing) {
       categoryIds.set(key, existing.id);
       return record(categorySection, { ...item, outcome: DUPLICATE_DATABASE, reason: 'A category with this name and type is already in the database.' });
     }
 
-    const id = categories.insertCategory(input);
+    const id = await categories.insertCategory(input);
     categoryIds.set(key, id);
     written.categories.push({ id, ...input });
     return record(categorySection, { ...item, outcome: IMPORTED });
@@ -361,7 +382,7 @@ function planAndWrite(data) {
   txSection.counts.received = data.transactions.length;
   const txRepeats = findRepeatedIds(data.transactions, sameTransactionData);
 
-  data.transactions.forEach((raw, index) => {
+  await eachRecord(data.transactions, async (raw, index) => {
     const item = { index, id: isPlainObject(raw) && typeof raw.id === 'string' ? raw.id : undefined };
 
     if (!isPlainObject(raw)) {
@@ -405,7 +426,7 @@ function planAndWrite(data) {
       });
     }
 
-    const check = validated(() => transactions.readBody({
+    const check = await validated(() => transactions.readBody({
       id: raw.id,
       type: raw.type,
       description: raw.description,
@@ -421,9 +442,11 @@ function planAndWrite(data) {
     }
     const input = check.value;
 
-    const existing = db
-      .prepare('SELECT id, type, description, category_id, account_id, amount_minor, note, date, created_at FROM transactions WHERE id = ?')
-      .get(input.id);
+    const existing = (await db.query(
+      `SELECT id, type, description, category_id, account_id, amount_minor, note, date, created_at
+       FROM transactions WHERE id = $1`,
+      [input.id]
+    )).rows[0];
     if (existing) {
       const identical = existing.type === input.type
         && existing.description === input.description
@@ -439,13 +462,13 @@ function planAndWrite(data) {
       return record(txSection, { ...item, outcome: REJECTED, conflict: true, reason: 'A transaction with this id already exists in the database with different data. It was not changed.' });
     }
 
-    transactions.insertTransaction(input);
+    await transactions.insertTransaction(input);
     written.transactions.push(input);
     return record(txSection, { ...item, outcome: IMPORTED });
   });
 
   // ---- 4. read everything back --------------------------------------------
-  const verification = verifyWritten(written);
+  const verification = await verifyWritten(written);
 
   const rejectedTotal = ENTITIES.reduce((sum, name) => {
     const c = sections[name].counts;
@@ -470,7 +493,7 @@ function planAndWrite(data) {
     },
     verification,
     databaseBefore: before,
-    databaseAfter: databaseCounts()
+    databaseAfter: await databaseCounts()
   };
 }
 
@@ -485,8 +508,7 @@ function isOldDefaultCategory(record) {
 
 // Reads every record this import wrote back out of the database and compares
 // it with what was meant to be written. A mismatch aborts the whole import.
-function verifyWritten(written) {
-  const db = getDb();
+async function verifyWritten(written) {
   let checked = 0;
 
   const expect = (condition, what) => {
@@ -495,17 +517,19 @@ function verifyWritten(written) {
   };
 
   for (const input of written.accounts) {
-    const row = db.prepare('SELECT name, type, balance_minor FROM accounts WHERE id = ?').get(input.id);
+    const row = (await db.query('SELECT name, type, balance_minor FROM accounts WHERE id = $1', [input.id])).rows[0];
     expect(row && row.name === input.name && row.type === input.type && row.balance_minor === toMinor(input.balance), 'an account');
   }
   for (const input of written.categories) {
-    const row = db.prepare('SELECT name, type FROM categories WHERE id = ?').get(input.id);
+    const row = (await db.query('SELECT name, type FROM categories WHERE id = $1', [input.id])).rows[0];
     expect(row && row.name === input.name && row.type === input.type, 'a category');
   }
   for (const input of written.transactions) {
-    const row = db
-      .prepare('SELECT type, description, category_id, account_id, amount_minor, note, date, created_at FROM transactions WHERE id = ?')
-      .get(input.id);
+    const row = (await db.query(
+      `SELECT type, description, category_id, account_id, amount_minor, note, date, created_at
+       FROM transactions WHERE id = $1`,
+      [input.id]
+    )).rows[0];
     expect(
       row
         && row.type === input.type
@@ -526,12 +550,12 @@ function verifyWritten(written) {
 // Route handlers
 // ---------------------------------------------------------------------------
 
-function run(body, commit) {
+async function run(body, commit) {
   checkEnvelope(body);
 
   let result;
   try {
-    result = runInTransaction(() => planAndWrite(body.data), { dryRun: !commit });
+    result = await db.runInTransaction(() => planAndWrite(body.data), { dryRun: !commit });
   } catch (error) {
     // Details stay in the server console (they never contain the records).
     console.error(`Import ${commit ? 'failed' : 'preview failed'}:`, error.message);
@@ -547,13 +571,13 @@ function run(body, commit) {
   return ok({ mode: commit ? 'import' : 'preview', ...result });
 }
 
-function preview({ body }) {
+async function preview({ body }) {
   return run(body, false);
 }
 
 // The real import needs an explicit "confirm": true so that it can never be
 // started by accident (for example by repeating a preview request).
-function commit({ body }) {
+async function commit({ body }) {
   if (body.confirm !== true) {
     throw new ApiError(400, 'CONFIRMATION_REQUIRED', 'Send "confirm": true to start the import.');
   }

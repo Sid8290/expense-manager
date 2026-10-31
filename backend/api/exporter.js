@@ -1,8 +1,10 @@
 'use strict';
 
 // GET /api/export: a read-only snapshot of all financial data in the database,
-// as one JSON document. The three lists are read in one go, so they are
-// consistent with each other.
+// as one JSON document. The three lists are read inside ONE read-only
+// REPEATABLE READ transaction, so they all come from the same snapshot of the
+// database: a transaction saved while the export runs is in all three lists or
+// in none (it can never appear without its category or account).
 //
 // The records are exactly what the normal list endpoints return:
 //   accounts      { id, name, type, balance, currentBalance }  (currentBalance is calculated)
@@ -13,6 +15,7 @@
 // importer accepts (the importer only reads backups of the previous, browser-only
 // version), and nothing here claims otherwise.
 
+const db = require('../db');
 const { ok } = require('./common');
 const { allAccounts } = require('./accounts');
 const { allCategories } = require('./categories');
@@ -21,12 +24,16 @@ const { allTransactions } = require('./transactions');
 const EXPORT_FORMAT = 'expense-manager-database-export';
 const EXPORT_VERSION = 1;
 
-function exportData() {
-  const data = {
-    accounts: allAccounts(),
-    categories: allCategories(),
-    transactions: allTransactions()
-  };
+async function exportData() {
+  // SET TRANSACTION must be the first statement after BEGIN.
+  const data = await db.runInTransaction(async () => {
+    await db.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    return {
+      accounts: await allAccounts(),
+      categories: await allCategories(),
+      transactions: await allTransactions()
+    };
+  });
 
   return ok({
     format: EXPORT_FORMAT,

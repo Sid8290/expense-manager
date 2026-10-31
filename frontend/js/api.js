@@ -31,6 +31,10 @@
     amount: 'Amount',
     note: 'Note',
     date: 'Date',
+    from: 'From',
+    to: 'To',
+    search: 'Search',
+    category: 'Category',
     name: 'Name',
     balance: 'Balance'
   };
@@ -126,6 +130,16 @@
       return payload.data;
     }
 
+    // "/api/transactions" + "?type=income&search=tea". Empty values are left out.
+    const withQuery = (path, params) => {
+      const query = new URLSearchParams();
+      Object.entries(params || {}).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') query.set(key, String(value));
+      });
+      const text = query.toString();
+      return text ? `${path}?${text}` : path;
+    };
+
     const item = (collection, id) => `/api/${collection}/${encodeURIComponent(id)}`;
 
     return {
@@ -145,7 +159,11 @@
       createCategory: category => request('POST', '/api/categories', category),
       deleteCategory: id => request('DELETE', item('categories', id)),
 
-      listTransactions: () => request('GET', '/api/transactions'),
+      // Optional filters (type, categoryId, category, accountId, from, to, search,
+      // limit, offset); the server does the filtering. See docs/API.md.
+      listTransactions: filters => request('GET', withQuery('/api/transactions', filters)),
+      // Totals, per-category totals and per-month totals for the same filters.
+      getSummary: filters => request('GET', withQuery('/api/summary', filters)),
       createTransaction: transaction => request('POST', '/api/transactions', transaction),
       deleteTransaction: id => request('DELETE', item('transactions', id))
     };

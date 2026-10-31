@@ -4,7 +4,7 @@
 //
 // No browser is needed here. Three kinds of checks:
 //   1. The API client (frontend/js/api.js) against the REAL server, in this
-//      process, with a temporary database.
+//      process, with a throw-away PostgreSQL schema (TEST_DATABASE_URL).
 //   2. The REAL frontend/js/script.js loaded into a stubbed browser environment
 //      (Node's `vm`), to test its data layer, legacy-data detection and form
 //      guard without a DOM.
@@ -15,13 +15,13 @@
 const { test, describe, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const http = require('node:http');
 
 const db = require('../db');
 const { createServer } = require('../server');
+const { TEST_URL, createTestSchema } = require('./helpers/pg-test-db');
 const { createClient, ApiError } = require('../../frontend/js/api.js');
 
 const FRONTEND = path.join(__dirname, '..', '..', 'frontend');
@@ -43,13 +43,14 @@ const plain = value => JSON.parse(JSON.stringify(value)); // drops the vm realm 
 // Real server + temporary database for the client tests
 // ---------------------------------------------------------------------------
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'expense-frontend-test-'));
+let testSchema;
 let server;
 let origin;
 let client;
 
 before(async () => {
-  db.initDatabase(path.join(tmpRoot, 'frontend.db'));
+  testSchema = await createTestSchema();
+  await db.initDatabase({ connectionString: TEST_URL, schema: testSchema.schema });
   server = createServer();
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   origin = `http://127.0.0.1:${server.address().port}`;
@@ -61,12 +62,12 @@ after(async () => {
     server.closeAllConnections();
     server.close(resolve);
   });
-  db.closeDatabase();
-  fs.rmSync(tmpRoot, { recursive: true, force: true });
+  await db.closeDatabase();
+  await testSchema.drop();
 });
 
-beforeEach(() => {
-  db.getDb().exec('DELETE FROM transactions; DELETE FROM categories; DELETE FROM accounts;');
+beforeEach(async () => {
+  await db.query('DELETE FROM transactions; DELETE FROM categories; DELETE FROM accounts;');
 });
 
 async function seed() {
@@ -144,6 +145,28 @@ describe('api client against the real server', () => {
     await assert.rejects(client.createAccount({}), error => {
       assert.match(error.message, /Name: This field is required\./);
       assert.match(error.message, /Balance: This field is required\./);
+      return true;
+    });
+  });
+
+  test('listTransactions(filters) and getSummary(filters) send the filters and leave empty ones out', async () => {
+    const { account, category } = await seed();
+    await client.createTransaction({ type: 'expense', description: 'Tea', categoryId: category.id, accountId: account.id, amount: 2.5, date: '2025-01-01' });
+    await client.createTransaction({ type: 'expense', description: 'Milk', categoryId: category.id, accountId: account.id, amount: 1.5, date: '2025-01-02' });
+
+    assert.equal((await client.listTransactions({ search: 'tea', type: '', category: '', accountId: '' })).length, 1);
+    assert.equal((await client.listTransactions({ accountId: account.id, from: '2025-01-02' })).length, 1);
+    assert.equal((await client.listTransactions({})).length, 2);
+    assert.equal((await client.listTransactions(undefined)).length, 2);
+
+    const data = await client.getSummary({ type: 'expense', search: 'milk' });
+    assert.deepEqual(plain(data.totals), { count: 1, income: 0, expense: 1.5, balance: -1.5 });
+    assert.equal((await client.getSummary()).totals.count, 2);
+
+    await assert.rejects(client.listTransactions({ from: '2025-02-30' }), error => {
+      assert.equal(error.status, 400);
+      assert.equal(error.code, 'VALIDATION_ERROR');
+      assert.match(error.message, /^From: /, 'the field is shown with a friendly label');
       return true;
     });
   });

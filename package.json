@@ -1,14 +1,27 @@
 {
   "name": "expense-manager",
   "version": "1.0.0",
-  "description": "Expense Manager: vanilla HTML/CSS/JS frontend served by a Node.js backend with SQLite.",
+  "description": "Expense Manager: vanilla HTML/CSS/JS frontend served by an Express backend with PostgreSQL.",
   "private": true,
   "main": "backend/server.js",
   "scripts": {
-    "start": "node backend/server.js",
-    "test": "node --test \"backend/test/**/*.test.js\""
+    "start": "node --env-file-if-exists=.env backend/server.js",
+    "test": "node --env-file-if-exists=.env --test \"backend/test/**/*.test.js\"",
+    "test:db": "node --env-file-if-exists=.env --test backend/test/postgres-foundation.test.js",
+    "test:import": "node --env-file-if-exists=.env --test backend/test/import.test.js",
+    "test:filters": "node --env-file-if-exists=.env --test backend/test/filters.test.js",
+    "test:migration": "node --env-file-if-exists=.env --test backend/test/sqlite-migration.test.js",
+    "test:browser": "node --env-file-if-exists=.env backend/test/browser-check.js",
+    "migrate:sqlite": "node --env-file-if-exists=.env backend/tools/sqlite-to-postgres.js"
   },
   "engines": {
     "node": ">=22.13.0"
+  },
+  "dependencies": {
+    "express": "^5.3.0",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "playwright": "^1.64.1"
   }
 }
