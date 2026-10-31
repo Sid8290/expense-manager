@@ -8,11 +8,11 @@
     "start": "node --env-file-if-exists=.env backend/server.js",
     "test": "node --env-file-if-exists=.env --test \"backend/test/**/*.test.js\"",
     "test:db": "node --env-file-if-exists=.env --test backend/test/postgres-foundation.test.js",
-    "test:part2": "node --env-file-if-exists=.env --test backend/test/postgres-foundation.test.js backend/test/api.test.js backend/test/server.test.js backend/test/frontend.test.js",
     "test:import": "node --env-file-if-exists=.env --test backend/test/import.test.js",
     "test:filters": "node --env-file-if-exists=.env --test backend/test/filters.test.js",
-    "test:part4": "node --env-file-if-exists=.env --test backend/test/postgres-foundation.test.js backend/test/api.test.js backend/test/server.test.js backend/test/frontend.test.js backend/test/import.test.js backend/test/filters.test.js",
-    "test:part3": "node --env-file-if-exists=.env --test backend/test/postgres-foundation.test.js backend/test/api.test.js backend/test/server.test.js backend/test/frontend.test.js backend/test/import.test.js"
+    "test:migration": "node --env-file-if-exists=.env --test backend/test/sqlite-migration.test.js",
+    "test:browser": "node --env-file-if-exists=.env backend/test/browser-check.js",
+    "migrate:sqlite": "node --env-file-if-exists=.env backend/tools/sqlite-to-postgres.js"
   },
   "engines": {
     "node": ">=22.13.0"

@@ -1,177 +1,195 @@
 # Expense Manager
 
-> **Migration in progress (SQLite to PostgreSQL, Parts 1 to 4 of 5 done).** The server runs on Express with PostgreSQL (`DATABASE_URL`, see [Part 1](docs/POSTGRES_PART1_CHECKPOINT.md), [Part 2](docs/POSTGRES_PART2_CHECKPOINT.md), [Part 3](docs/POSTGRES_PART3_CHECKPOINT.md) and [Part 4](docs/POSTGRES_PART4_CHECKPOINT.md)). Accounts, categories, transactions, import/preview, export, server-side transaction filtering and the summary endpoint all work on PostgreSQL. Use `npm test` with `TEST_DATABASE_URL` set. **The rewrite of this README (Part 5) is not done yet**, so the rest of it still describes the SQLite version.
+A small expense manager: a plain HTML, CSS and JavaScript frontend served by an **Express** backend that stores accounts, categories and transactions in **PostgreSQL**. Settings, bills and to-do items stay in the browser's `localStorage`.
 
-A simple expense manager built with plain HTML, CSS and JavaScript. Transactions, accounts and categories are stored in a SQLite database through a small Node.js backend; settings, bills and to-do items are still kept in the browser's `localStorage`. Data saved by the older, browser-only version can be copied into the database from the Settings page (see [Current Status](#current-status)).
+It is meant to run on your own computer (it listens on `127.0.0.1` only and has no login).
 
 ## Features
 
-- **Transactions**: add income and expense transactions with description, type, category, account, amount, date and an optional note. View them in a table, delete them, and filter by search text, type, category and account. Amounts are validated and must be greater than zero.
-- **Accounts**: add cash, bank and online accounts with an initial balance. Their balances update automatically with transactions. You can also track assets, money to receive and money to give, and see a financial position summary.
-- **Categories**: add and delete income and expense categories. The transaction form uses the categories you have created. Categories and accounts that are used by transactions cannot be deleted.
-- **Dashboard**: total income, total expense, total balance, an income vs expense bar chart for the last 6 months, the 5 most recent transactions, upcoming expenses and a to-do list.
-- **Analytics**: this month vs last month, balance, expense and income statistics, category breakdown charts, category cards and top expenses / top income sources tables. Charts are drawn with HTML, CSS and JavaScript only.
-- **Settings**: theme (light, dark, system), default currency, date format, default transaction type, notification preferences, name and email display, and a reset button that clears the settings, bills and to-do items stored in the browser (it never deletes database records).
-- **Data migration and export** (Settings): review records left in the browser by the older version, download a backup, preview and confirm an import into the database, and download a database export. Nothing in the browser is changed or deleted.
-- **Notifications**: a bell menu that shows bill reminders and a monthly summary, plus a short message after adding or deleting a transaction. Each can be turned on or off in Settings.
-- **Navigation search**: the search box in the header opens the Transactions page filtered by your search text.
-- **Mobile**: the sidebar becomes a slide-in menu opened with a menu button.
-- **Persistence**: transactions, accounts and categories are saved in the SQLite database and remain after a refresh or a server restart. Settings, bills and to-do items are saved in `localStorage`.
+- **Transactions**: add income and expense transactions (description, type, category, account, amount, date, optional note), view and delete them. Filtering and totals are done **by the server**: search text, type, category and account (the API also supports a date range and paging, see [docs/API.md](docs/API.md)).
+- **Accounts**: cash, bank and online accounts with an initial balance; their balances update with every transaction. Assets, money to receive and money to give are tracked too, with a financial position summary.
+- **Categories**: add and delete income and expense categories. Accounts and categories that transactions use cannot be deleted.
+- **Dashboard**: total income, expense and balance, a 6-month income vs expense chart, the 5 latest transactions, upcoming bills and a to-do list.
+- **Analytics**: this month vs last month, category breakdowns, top expenses and income sources (drawn with HTML, CSS and JavaScript only).
+- **Settings**: theme, currency, date format, default transaction type, notification preferences, and a reset button that clears the browser-stored settings, bills and to-dos (it never deletes database records).
+- **Import and export** (Settings): review records the older, browser-only version left in this browser, download a backup, preview and confirm an import into the database, and download a database export. Nothing in the browser is changed or deleted.
+- **Summary API**: `GET /api/summary` returns exact totals, per-category and per-month sums for any filter.
+- **Moving data from the old SQLite version**: an optional command-line tool (see [below](#moving-data-from-the-old-sqlite-version)).
 
-Changing the currency only changes the symbol and number format; amounts are not converted. The name, email and password fields in Settings are display only: there is no login or authentication.
+Changing the currency only changes the symbol and number format; amounts are not converted. The name, email and password fields in Settings are display only.
 
-## Technologies
+## Technology
 
-- HTML5
-- CSS3
-- Vanilla JavaScript
-- Browser `localStorage` (settings, bills and to-dos only)
-- `fetch` for same-origin calls to the API
-- Font Awesome (loaded from a CDN)
-- Node.js (built-in `http` module, no web framework)
-- SQLite through Node's built-in `node:sqlite` module (no npm packages)
+- Frontend: HTML5, CSS3, vanilla JavaScript, `fetch`, Font Awesome icons from a CDN.
+- Backend: Node.js, **Express 5**, **PostgreSQL** through the `pg` driver (parameterized `$1, $2` queries, one transaction per multi-step write, versioned migrations).
+- Tests: Node's built-in test runner against a real PostgreSQL server; an optional Playwright browser check.
+- `node:sqlite` (built into Node.js) is used **only** by the optional migration tool and its tests.
 
-## Project Structure
+## Project structure
 
 ```
 expense-manager/
-├── package.json            npm scripts (start, test) and the required Node.js version
+├── package.json, package-lock.json
+├── .env.example            copy to .env (never commit .env)
 ├── backend/
-│   ├── server.js           HTTP server: static files, /api routing, JSON body reading, startup and shutdown
-│   ├── db.js               SQLite connection, schema migrations, status check
-│   ├── api/
-│   │   ├── common.js       ApiError, response helper, money conversion
-│   │   ├── validate.js     shared request validation
-│   │   ├── accounts.js     /api/accounts
-│   │   ├── categories.js   /api/categories
-│   │   ├── transactions.js /api/transactions
-│   │   ├── importer.js     /api/import/preview and /api/import (legacy browser data -> SQLite)
-│   │   └── exporter.js     /api/export (database export)
-│   ├── data/               created at runtime; holds the SQLite file (not committed)
-│   └── test/
-│       ├── server.test.js  Stage 1 tests: server, static files, startup, shutdown
-│       ├── api.test.js     Stage 2 tests: the three APIs, constraints, migration
-│       ├── frontend.test.js Stage 3-4 tests: API client, page data layer, legacy-data safety, backup
-│       ├── import.test.js  Stage 4 tests: import, preview, export, idempotency, atomicity
-│       └── browser-check.js optional real-browser check (needs Playwright, see below)
-├── frontend/
-│   ├── index.html          dashboard
-│   ├── pages/              transactions, categories, accounts, analytics, settings
-│   ├── css/style.css
-│   ├── js/api.js           the only code that calls /api (loaded before script.js)
-│   ├── js/script.js
-│   └── assets/
-└── docs/                   API.md (API reference), stage checkpoints (STAGE1-4_CHECKPOINT.md)
+│   ├── server.js           Express app: /api routes, JSON body handling, static files, startup, shutdown
+│   ├── db.js               pg pool, migrations, query(), runInTransaction(), health status
+│   ├── db-errors.js        maps PostgreSQL constraint errors (SQLSTATE) to API answers
+│   ├── api/                accounts, categories, transactions, summary, importer, exporter,
+│   │                       transaction-filters (query-string filters -> parameterized SQL), validate, common
+│   ├── tools/sqlite-to-postgres.js   optional one-time data migration tool
+│   └── test/               *.test.js, helpers/, browser-check.js
+├── frontend/               index.html, pages/, css/style.css, js/api.js (the only code that calls /api), js/script.js
+└── docs/                   API.md (API reference) and the checkpoint documents (see "Documentation")
 ```
 
-## Getting Started
+## Requirements
 
-### Prerequisites
+- **Node.js 22.13 or newer** (developed on 22.22.0; also intended for Node 24).
+- **PostgreSQL 13 or newer** (tested on 16.15). Version 13+ is needed for `trim_scale`, used by the search filter.
+- A web browser. Playwright is needed only for the optional browser check.
 
-- **Node.js 22.13.0 or newer.** Older 22.x versions do not enable `node:sqlite` without an extra flag. Check yours with `node --version`. This project was developed and tested on Node.js 22.22.0.
-- No `npm install` is needed: there are no dependencies.
+## Setup
 
-### Start the app (Windows PowerShell or Command Prompt)
+### 1. Create the databases (once)
+
+Choose your own password. Using `psql` (on Windows, run it from the PostgreSQL `bin` folder or the SQL Shell):
 
 ```
-cd path\to\expense-manager
+psql -U postgres -c "CREATE USER expense_user WITH PASSWORD 'choose-a-password';"
+psql -U postgres -c "CREATE DATABASE expense_manager OWNER expense_user;"
+psql -U postgres -c "CREATE DATABASE expense_manager_test OWNER expense_user;"
+```
+
+`expense_manager` is the app's database. `expense_manager_test` is a **separate** database used only by the automated tests (they create and drop their own temporary schemas in it). The tables are created automatically when the server first starts.
+
+### 2. Configure `.env`
+
+```
+copy .env.example .env        (Command Prompt / PowerShell)
+cp .env.example .env          (macOS / Linux)
+```
+
+Open `.env` and replace `CHANGE_ME` with your password. `.env` is ignored by Git; `.env.example` contains placeholders only.
+
+| Variable | Required | Meaning |
+| --- | --- | --- |
+| `DATABASE_URL` | yes, to run the app | `postgres://USER:PASSWORD@HOST:PORT/DATABASE`, e.g. `postgres://expense_user:...@127.0.0.1:5432/expense_manager`. If it is missing, or PostgreSQL cannot be reached, the server prints the reason (never the password) and exits. |
+| `TEST_DATABASE_URL` | yes, to run the database tests | URL of the separate test database. Its name must contain "test" and must differ from `DATABASE_URL`, or the tests refuse to run. |
+| `PORT` | no (3000) | Port to listen on (`0` = any free port). |
+| `HOST` | no (127.0.0.1) | Address to listen on. Keep the default unless you understand the risk: there is no login. |
+
+`FRONTEND_ROOT` and `CHECK_PORT` exist only for the automated tests.
+
+### 3. Install and start
+
+```
+npm install
 npm start
 ```
 
-Then open the dashboard at **http://127.0.0.1:3000**. Stop the server with `Ctrl+C`.
+Open **http://127.0.0.1:3000**. Stop with `Ctrl+C` (the server finishes in-flight requests and closes the database pool first). Use `npm ci` instead of `npm install` for an exact install from the lockfile.
 
-To use another port:
-
-```
-# PowerShell
-$env:PORT = 4000; npm start
-
-# Command Prompt
-set PORT=4000 && npm start
-```
-
-Node.js prints an `ExperimentalWarning: SQLite is an experimental feature` message on startup. This is expected: `node:sqlite` is still marked experimental by Node.js.
+To use another port: PowerShell `$env:PORT = 4000; npm start`, Command Prompt `set PORT=4000 && npm start`.
 
 ### Check that the backend is healthy
 
 ```
-# PowerShell
-Invoke-RestMethod http://127.0.0.1:3000/api/health
-
-# Command Prompt (curl.exe ships with Windows 10 and later)
-curl.exe http://127.0.0.1:3000/api/health
+Invoke-RestMethod http://127.0.0.1:3000/api/health        (PowerShell)
+curl http://127.0.0.1:3000/api/health                     (curl)
 ```
-
-A healthy response looks like this (values such as `uptimeSeconds` will differ):
 
 ```json
-{
-  "ok": true,
-  "data": {
-    "status": "ok",
-    "server": { "running": true, "uptimeSeconds": 12 },
-    "database": { "ready": true, "engine": "postgresql", "serverVersion": "16.4", "schemaVersion": 2 }
-  }
-}
+{ "ok": true, "data": { "status": "ok", "server": { "running": true, "uptimeSeconds": 12 },
+  "database": { "ready": true, "engine": "postgresql", "serverVersion": "16.15", "schemaVersion": 2 } } }
 ```
 
-If the database is not usable, `/api/health` returns HTTP 503 with `"ok": false`. If the database cannot be opened at startup, the server prints the reason and exits instead of running.
+If the database stops being usable, `/api/health` answers HTTP 503 with `"ok": false`. The response never contains connection details.
 
-### Run the automated tests
+## Tests
 
-```
-npm test
-```
+All database tests run against `TEST_DATABASE_URL` (set in `.env` or the environment). Each test file creates its own temporary schema and drops it afterwards; your real database is never touched.
 
-The tests run the real server with temporary databases and, where needed, a temporary copy of the frontend. They do not touch your real database or your browser data.
+| Command | What it runs |
+| --- | --- |
+| `npm test` | Everything: database foundation, API, server, frontend data layer, import/export, filters and summary, SQLite migration tool |
+| `npm run test:db` | The database layer (migrations, transactions, error mapping) |
+| `npm run test:import` | Import, preview and export |
+| `npm run test:filters` | Transaction filters, paging and the summary endpoint |
+| `npm run test:migration` | The SQLite-to-PostgreSQL migration tool |
+| `npm run test:browser` | The optional real-browser check (below) |
 
-### Settings
+The graceful-shutdown tests need Linux or macOS (Windows cannot send a signal to a child process) and are skipped on Windows; the symbolic-link tests are skipped where symlinks are not permitted.
 
-| Variable         | Default                           | Meaning                                  |
-| ---------------- | --------------------------------- | ---------------------------------------- |
-| `PORT`           | `3000`                            | Port to listen on (`0` = any free port)  |
-| `HOST`           | `127.0.0.1`                       | Address to listen on (this computer only)|
-| `EXPENSE_DB_PATH`| `backend/data/expense-manager.db` | Where the SQLite file is stored          |
+### Optional real-browser check
 
-## API
-
-The backend exposes `GET /api/health` plus create/read/update/delete endpoints for accounts, categories and transactions. The full reference (routes, rules, error codes and examples) is in [docs/API.md](docs/API.md). A quick check from PowerShell:
-
-```
-Invoke-RestMethod http://127.0.0.1:3000/api/accounts
-```
-
-## Optional real-browser check
-
-`npm test` needs nothing but Node.js. A second, optional check drives the real pages in a headless browser against a temporary server and database (it never touches your real database or browser profile):
+It drives the real pages in headless Chromium against a temporary server and schema:
 
 ```
 npm install --no-save playwright
 npx playwright install chromium
-node backend/test/browser-check.js
+npm run test:browser
 ```
 
-## Current Status
+## Moving data from the old SQLite version
 
-This is **Stage 4: safe import, export and migration**.
+Earlier versions of this project stored the data in a SQLite file (`backend/data/expense-manager.db`). If you have one, you can copy it into PostgreSQL once with `backend/tools/sqlite-to-postgres.js`.
 
-- Transactions, accounts and categories are read from and written to the database through the API on every page (`frontend/js/api.js` is the only code that calls `/api`).
-- Settings, theme, bills and to-do items stay in `localStorage`.
-- A fresh database is **empty**: the old version's default accounts and categories are not created.
-- **Moving old data:** Settings -> "Move Data From the Old Version" lets you review what the old browser-only version left in this browser, download a backup file, preview the import (nothing is changed), tick a confirmation box and import. The import is all-or-nothing, never overwrites, skips duplicates, reports every rejected record, and can be repeated safely (the second run imports nothing). The records in `localStorage` are only read, never changed or deleted. Details: [docs/STAGE4_CHECKPOINT.md](docs/STAGE4_CHECKPOINT.md).
-- **Exports:** "Download Browser Backup" (old data exactly as stored) and "Download Database Export" (current database). Both are backups/checks; neither can be imported back into the app.
-- A notice on every page remains while old records stay in this browser; after an import it says whether they are already in the database. Dismissing it only hides it for the current tab.
-- The app must be opened through the server (`http://127.0.0.1:3000`). Opening an HTML file directly shows an instruction instead of data.
+**Before you start**
 
-## Known Limitations
+1. **Back up** the SQLite file (copy it somewhere safe) and the PostgreSQL database (`pg_dump -U expense_user expense_manager > backup.sql`). The tool never changes the SQLite file, but a backup is the right habit.
+2. Stop the old server. Make sure `DATABASE_URL` points at the database you want (the destination).
 
-- **Browser data is per address.** `localStorage` is stored separately for each origin. Data you entered earlier by opening the HTML files directly (a `file://` address), or on a different port or host name, will not appear at `http://127.0.0.1:3000`. Use one address consistently. `http://localhost:3000` and `http://127.0.0.1:3000` also count as different origins.
-- Font Awesome icons (menu and bell) load from a CDN and need an internet connection.
-- `node:sqlite` is experimental in Node.js, so its behavior may change in future Node.js releases.
-- The API has no authentication and no CORS headers, and it does not check the `Host` header. It is meant for a computer you control, bound to `127.0.0.1`.
-- Bills, to-do items and settings have no API; they stay in `localStorage`.
-- Each page loads its data when it opens. Changes made in another browser tab appear after a reload (a save or delete that conflicts with such a change refreshes the page's lists and shows a message).
-- The browser backup and the database export cannot be re-imported (backup/inspection only). Old data can only be imported from the same browser and address (`localStorage` is per origin) it was stored in.
-- There is no way yet to edit a record (the original app had none) or to delete all database records from the Settings page.
-- The server is meant for local use only: it listens on `127.0.0.1`, has no login and sends no CORS headers.
-- The shutdown tests need a Linux or macOS machine (Windows cannot send a graceful signal to a child process); they are skipped on Windows.
+**Preview first (saves nothing)**
+
+```
+npm run migrate:sqlite -- --source backend\data\expense-manager.db
+```
+
+It shows the counts (in SQLite, to copy, already there) and runs the real inserts inside a transaction that is then rolled back, so every database rule is checked.
+
+**Copy the data**
+
+```
+npm run migrate:sqlite -- --source backend\data\expense-manager.db --apply
+```
+
+What it guarantees (each point is covered by `npm run test:migration`):
+
+- The SQLite file is opened **read-only** and is never modified, created or deleted. `--source` is required; the destination is always `DATABASE_URL`; nothing is assumed.
+- Ids (account ids, category numbers, transaction ids), amounts (exact whole paise), dates, notes and creation times are copied unchanged, and every row is read back and compared, and each account's balance is re-checked, before the transaction is committed.
+- It is **one transaction**: any problem rolls everything back and nothing is left behind.
+- It never overwrites. Records already in PostgreSQL with identical data are skipped, so **running it again changes nothing** ("already migrated"). The same id with different data, or a name already used by another record, is a **conflict**: the whole migration is refused (exit code 2) and nothing is written. The easiest and recommended way is to migrate into an **empty** database.
+- The password is never printed.
+
+Exit codes: `0` done (or nothing to do), `1` error, `2` conflicts. The tool needs the built-in `node:sqlite` module (Node.js 22.13+), which Node may report as experimental; that is why it is the only code that uses it. Source files from other versions (schema version other than 2) are refused rather than guessed at.
+
+The browser-only version's data (in `localStorage`) is a different path: use Settings, "Move Data From the Old Version".
+
+## API
+
+See [docs/API.md](docs/API.md) for every endpoint, parameter, response and error code. A quick check from PowerShell:
+
+```
+Invoke-RestMethod http://127.0.0.1:3000/api/accounts
+Invoke-RestMethod "http://127.0.0.1:3000/api/summary?type=expense"
+```
+
+## Documentation
+
+- `docs/API.md`: the API reference (kept in step with the code).
+- `docs/POSTGRES_PART1-4_CHECKPOINT.md`, `docs/POSTGRES_PART5_CHECKPOINT.md`: how and why the PostgreSQL migration was done, step by step.
+- `docs/STAGE1-4_CHECKPOINT.md`, `docs/FINAL_AUDIT_CHECKPOINT.md`: the history of the earlier SQLite-based versions. They describe that earlier design and are kept for reference only.
+
+## Known limitations
+
+- **Local use only.** No authentication, no CORS headers, no `Host` header check; it listens on `127.0.0.1`.
+- **Browser data is per address.** `localStorage` is stored separately for each origin; `http://localhost:3000` and `http://127.0.0.1:3000` differ, and so does data from a `file://` page. Use one address.
+- Bills, to-do items and settings have no API and stay in `localStorage`.
+- The dashboard, analytics page and bell notification still add up the transactions they loaded in the browser; only the Transactions page uses the server-side filters and the summary endpoint.
+- The Transactions page has no date-range inputs (the API supports `from` and `to`), and records cannot be edited in the pages (the API supports `PUT`).
+- Each page loads its data when it opens; changes made in another tab appear after a reload.
+- The browser backup and the database export cannot be re-imported (backup and inspection only).
+- PostgreSQL never rewinds identity counters, so a preview or a rolled-back import can leave gaps in category numbers. Ids stay unique.
+- Case-insensitive search of non-ASCII letters depends on the PostgreSQL database's locale.
+- Font Awesome icons load from a CDN and need an internet connection.

@@ -1,5 +1,7 @@
 # Stage 4 checkpoint: safe import, export and migration
 
+> **Historical document.** It describes the earlier SQLite-based version of this project. The application now runs on Express and PostgreSQL; see [README.md](../README.md) and [docs/API.md](API.md) for the current design. Statements below about SQLite, `node:sqlite` and the old file layout no longer apply.
+
 ## What Stage 4 adds
 - `POST /api/import/preview`, `POST /api/import`, `GET /api/export` (see `docs/API.md`).
 - `backend/api/importer.js`, `backend/api/exporter.js`; `db.runInTransaction(work, { dryRun })` in `backend/db.js`.

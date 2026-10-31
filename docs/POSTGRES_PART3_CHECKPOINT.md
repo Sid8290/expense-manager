@@ -1,5 +1,7 @@
 # PostgreSQL migration, Part 3: import and export
 
+> Written at the end of Part 3; it describes the project as it was then. Later parts finished the work listed as "not done" here. The current state is in [README.md](../README.md) and [POSTGRES_PART5_CHECKPOINT.md](POSTGRES_PART5_CHECKPOINT.md).
+
 **Status: Part 3 of 5 is done.** `GET /api/export`, `POST /api/import/preview` and `POST /api/import` run on PostgreSQL again. Request/response formats, validation rules, error codes and report fields are unchanged from the SQLite version.
 
 ## What changed

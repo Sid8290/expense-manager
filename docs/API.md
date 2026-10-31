@@ -1,10 +1,24 @@
-# Expense Manager: API reference (Stages 2 and 4)
+# Expense Manager: API reference
 
-Base URL: `http://127.0.0.1:3000`. All endpoints live under `/api/`. The frontend does **not** use them yet.
+Base URL: `http://127.0.0.1:3000` (set `HOST` and `PORT` to change it). All endpoints live under `/api/`; the frontend pages use them for every financial record. The server is Express, the data is in PostgreSQL.
+
+Endpoints at a glance:
+
+| Path | Methods |
+| --- | --- |
+| `/api/health` | GET |
+| `/api/accounts`, `/api/accounts/:id` | GET, POST / GET, PUT, DELETE |
+| `/api/categories`, `/api/categories/:id` | GET, POST / GET, PUT, DELETE |
+| `/api/transactions`, `/api/transactions/:id` | GET (with filters), POST / GET, PUT, DELETE |
+| `/api/summary` | GET |
+| `/api/import/preview`, `/api/import` | POST |
+| `/api/export` | GET |
+
+Routes are matched exactly: a different letter case (`/api/Accounts`) or a trailing slash (`/api/accounts/`) is a `404`. `HEAD` works wherever `GET` does. Any other method on a known path is `405` with an `Allow` header (including `OPTIONS`; there is no CORS).
 
 ## Conventions
 
-- Requests with a body (`POST`, `PUT`) must send `Content-Type: application/json` and a JSON **object**. Other content types get `415`. Bodies over 64 KB get `413`.
+- Requests with a body (`POST`, `PUT`) must send `Content-Type: application/json` and a JSON **object**. Other content types get `415` (checked before the body is read). Bodies over 64 KB get `413`; only the two import endpoints accept up to 8 MB.
 - Success: `{ "ok": true, "data": ... }`. Failure: `{ "ok": false, "error": { "code", "message", "details"? } }`. `details` (validation errors only) is a list of `{ "field", "message" }`, and **all** problems are listed at once.
 - `PUT` replaces all editable fields (there is no `PATCH`). Unknown fields are rejected, not ignored.
 - Money is a JSON **number** with at most 2 decimals, e.g. `45.5`. It is stored as whole paise internally. Strings such as `"45.5"` are rejected.
@@ -12,20 +26,37 @@ Base URL: `http://127.0.0.1:3000`. All endpoints live under `/api/`. The fronten
 - `DELETE` returns `200` with `{ "ok": true, "data": { "id": ... } }`.
 - Deleting a record that other records use is refused with `409 IN_USE`. Nothing is ever cascade-deleted.
 
-## Database schema (migration version 2)
+## Health: `GET /api/health`
+
+Asks the database for its real, current state (it does not trust a flag set at startup).
 
 ```
-accounts      id TEXT PK | name TEXT UNIQUE NOCASE (1-40) | type (cash|bank|online|asset|receivable|payable)
-              | balance_minor INTEGER (0 .. 100,000,000,000)
-categories    id INTEGER PK AUTOINCREMENT | name (1-30) | type (income|expense)
-              | UNIQUE(type, name NOCASE) | UNIQUE(id, type)
-transactions  id TEXT PK | type (income|expense) | description (1-100)
-              | category_id | account_id -> accounts(id) ON DELETE RESTRICT
-              | amount_minor INTEGER (1 .. 100,000,000,000) | note (0-200) | date 'YYYY-MM-DD' | created_at INTEGER (ms)
+200 {"ok":true,"data":{"status":"ok","server":{"running":true,"uptimeSeconds":12},
+     "database":{"ready":true,"engine":"postgresql","serverVersion":"16.15","schemaVersion":2}}}
+
+503 {"ok":false,"data":{"status":"degraded",...,"database":{"ready":false,"engine":"postgresql"}},
+     "error":{"code":"DATABASE_NOT_READY","message":"The database is not ready."}}
+```
+
+It never contains the connection URL, user name or password.
+
+## Database schema (PostgreSQL, schema version 2)
+
+Created and upgraded automatically at startup (`backend/db.js`, numbered migrations recorded in `schema_migrations`; a database with a newer version than the app understands is refused).
+
+```
+accounts      seq BIGINT identity (insertion order) | id TEXT PK (1-64) | name TEXT (1-40, unique ignoring case)
+              | type (cash|bank|online|asset|receivable|payable) | balance_minor BIGINT (0 .. 100,000,000,000)
+categories    id INTEGER identity PK | name (1-30) | type (income|expense)
+              | UNIQUE(type, lower(name)) | UNIQUE(id, type)
+transactions  seq BIGINT identity | id TEXT PK (1-64) | type (income|expense) | description (1-100)
+              | category_id INTEGER | account_id -> accounts(id) ON DELETE RESTRICT
+              | amount_minor BIGINT (1 .. 100,000,000,000) | note (0-200) | date TEXT 'YYYY-MM-DD' | created_at BIGINT (ms)
               | FOREIGN KEY (category_id, type) -> categories(id, type) ON DELETE RESTRICT
+app_meta, schema_migrations   bookkeeping
 ```
 
-The composite foreign key means the database itself guarantees an income transaction can only use an income category, and that a category cannot change type while transactions use it. `PRAGMA foreign_keys = ON` is set and verified on the connection. Tables start empty (nothing is seeded).
+Money is stored as whole minor units (paise), so sums are exact. The composite foreign key means the database itself guarantees an income transaction can only use an income category, and that a category cannot change type while transactions use it. Foreign keys are always enforced by PostgreSQL. Tables start empty (nothing is seeded). Every database query uses `$1, $2, ...` parameters.
 
 ## Accounts: `/api/accounts`
 
@@ -72,7 +103,7 @@ POST /api/categories   {"name":"Groceries","type":"expense"}
 
 | Method | Path | Success | Notes |
 | --- | --- | --- | --- |
-| GET | `/api/transactions` | 200, list | Newest `date` first, then newest `createdAt` (the frontend's order). Optional filters: see [Filtering and summary](#filtering-and-summary-part-4) |
+| GET | `/api/transactions` | 200, list | Newest `date` first, then newest `createdAt` (the frontend's order). Optional filters: see [Filtering and summary](#filtering-and-summary) |
 | POST | `/api/transactions` | 201 + `Location` | Body below |
 | GET | `/api/transactions/:id` | 200 | |
 | PUT | `/api/transactions/:id` | 200 | Same fields as POST except `id` and `createdAt` (which never change) |
@@ -93,7 +124,7 @@ POST /api/transactions   (amount 1.234, income type with an expense category)
      {"field":"categoryId","message":"This is an expense category, but the transaction type is income."}]}}
 ```
 
-## Filtering and summary (Part 4)
+## Filtering and summary
 
 `GET /api/transactions` accepts optional query parameters, and `GET /api/summary` accepts the same filters. All are optional, combine with AND, and an empty value counts as absent.
 
@@ -122,7 +153,7 @@ Invalid, repeated or unknown parameters give `400 VALIDATION_ERROR` with every p
 
 `balance` is `income - expense` of the matching transactions (not an account balance; those are `currentBalance` on `/api/accounts`). `byCategory` lists the biggest total first (ties by name); `byMonth` lists the oldest month first. An empty result is zeros and empty lists. The sums are done by PostgreSQL on whole paise, so they are exact, and all three parts are read in one read-only `REPEATABLE READ` transaction, so they always agree with each other.
 
-## Import and export (Stage 4)
+## Import and export
 
 ### `POST /api/import/preview` and `POST /api/import`
 
@@ -147,7 +178,7 @@ Other top-level keys (`source`, `complete`, `problems`, `unreadable`, ...) are a
 
 Rules:
 
-- **All or nothing.** One transaction (`BEGIN IMMEDIATE`). Order: accounts, categories, transactions. Any unexpected failure rolls everything back (`500 IMPORT_FAILED` / `PREVIEW_FAILED`, "Nothing was saved").
+- **All or nothing.** One PostgreSQL transaction. Order: accounts, categories, transactions. Any unexpected failure rolls everything back (`500 IMPORT_FAILED` / `PREVIEW_FAILED`, "Nothing was saved").
 - **Same validation as the normal API** (the same `readBody` functions). Invalid records are *rejected* with a reason; the rest are still imported (`complete: false`).
 - **Never overwrites.** Same id with identical data = `duplicate-in-database` (skipped). Same id with different data, or a taken name = `rejected` (conflict).
 - Ids are preserved. A legacy category is matched to a database category by (type, name ignoring case); the transaction gets that category's numeric id.
@@ -210,11 +241,14 @@ The three lists are read in one read-only `REPEATABLE READ` transaction, so they
 | 400 | `INVALID_ID` | The id in the URL has an invalid format |
 | 404 | `NOT_FOUND` | No such record, or no such API path |
 | 405 | `METHOD_NOT_ALLOWED` | Method not supported for the path (see the `Allow` header) |
-| 409 | `CONFLICT` | Duplicate id or name |
+| 409 | `CONFLICT` | Duplicate id or name (also when two requests race and the database's unique index rejects the second) |
+| 409 | `CONSTRAINT_VIOLATION` | The database refused a change because other records are linked to it |
 | 409 | `IN_USE` | Delete (or type change) refused because transactions use the record |
-| 413 | `PAYLOAD_TOO_LARGE` | Body over 64 KB |
+| 413 | `PAYLOAD_TOO_LARGE` | Body over the limit (64 KB; 8 MB for the import endpoints) |
 | 415 | `UNSUPPORTED_MEDIA_TYPE` | Content type is not `application/json` |
-| 500 | `INTERNAL_ERROR` | Unexpected failure. The message is generic; details are only in the server console |
+| 400 | `UNSUPPORTED_FORMAT`, `UNSUPPORTED_VERSION`, `UNSUPPORTED_ENTITY`, `LIMIT_EXCEEDED`, `CONFIRMATION_REQUIRED` | Import documents only (see above) |
+| 500 | `INTERNAL_ERROR` | Unexpected failure (including a database error). The message is generic; details are only in the server console |
+| 500 | `IMPORT_FAILED`, `PREVIEW_FAILED` | The import or preview failed and nothing was saved |
 | 503 | `DATABASE_NOT_READY` | `/api/health` only, when the database is not usable |
 
 ## Trying it on Windows (PowerShell)
@@ -222,11 +256,14 @@ The three lists are read in one read-only `REPEATABLE READ` transaction, so they
 Start the server in one window (`npm start`), then in another:
 
 ```powershell
+Invoke-RestMethod http://127.0.0.1:3000/api/health
 Invoke-RestMethod http://127.0.0.1:3000/api/accounts
 
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:3000/api/accounts `
   -ContentType 'application/json' `
   -Body '{"name":"Cash","type":"cash","balance":1000}'
+
+Invoke-RestMethod 'http://127.0.0.1:3000/api/summary?type=expense'
 ```
 
-Records you create this way stay in `backend/data/expense-manager.db` and do not appear in the app yet. To start from a clean database, stop the server and delete that file.
+Records created this way are real records in your database and appear in the app. To remove them, delete them in the app or through `DELETE` requests.

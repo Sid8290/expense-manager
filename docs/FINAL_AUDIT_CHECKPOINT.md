@@ -1,5 +1,7 @@
 # Final audit checkpoint (post-Stage 4)
 
+> **Historical document.** It describes the earlier SQLite-based version of this project. The application now runs on Express and PostgreSQL; see [README.md](../README.md) and [docs/API.md](API.md) for the current design. Statements below about SQLite, `node:sqlite` and the old file layout no longer apply.
+
 Baseline: commit `5f42edb Add safe legacy data import and export` (branch `main`). Audited from a fresh read-only clone, plus a real headless-browser run. Changes are uncommitted in the working tree.
 
 ## Overall assessment

@@ -1,5 +1,7 @@
 # PostgreSQL migration, Part 4: server-side filtering and summaries
 
+> Written at the end of Part 4; it describes the project as it was then. Later parts finished the work listed as "not done" here. The current state is in [README.md](../README.md) and [POSTGRES_PART5_CHECKPOINT.md](POSTGRES_PART5_CHECKPOINT.md).
+
 **Status: Part 4 of 5 is done.** The transactions page now asks the server for its filtered list and totals. Everything from Parts 1 to 3 is unchanged in behaviour.
 
 ## What changed

@@ -1,5 +1,7 @@
 # PostgreSQL migration, Part 2: Express server and core APIs
 
+> Written at the end of Part 2; it describes the project as it was then. Later parts finished the work listed as "not done" here. The current state is in [README.md](../README.md) and [POSTGRES_PART5_CHECKPOINT.md](POSTGRES_PART5_CHECKPOINT.md).
+
 **Status: Part 2 of 5 is done.** The server runs on Express with PostgreSQL, and the accounts, categories and transactions APIs work with the unchanged frontend. **Import and export are switched off until Part 3**: `/api/import`, `/api/import/preview` and `/api/export` answer the standard 404, and `backend/test/import.test.js` fails until it is migrated.
 
 ## What changed

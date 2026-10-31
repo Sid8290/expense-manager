@@ -1,5 +1,7 @@
 # PostgreSQL migration, Part 1: database foundation
 
+> Written at the end of Part 1; it describes the project as it was then. Later parts finished the work listed as "not done" here. The current state is in [README.md](../README.md) and [POSTGRES_PART5_CHECKPOINT.md](POSTGRES_PART5_CHECKPOINT.md).
+
 **Status: Part 1 of 5 is done. The application as a whole does NOT run yet.** `backend/server.js`, the three API modules and the importer/exporter still call the old SQLite functions (`db.getDb()` and friends), which no longer exist. They are migrated in Parts 2 and 3. Until then use `npm run test:db`; `npm test` is expected to fail (see "Compatibility left for Part 2").
 
 ## What Part 1 contains

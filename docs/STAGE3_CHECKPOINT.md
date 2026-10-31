@@ -1,5 +1,7 @@
 # Expense Manager: Stage 3 Checkpoint
 
+> **Historical document.** It describes the earlier SQLite-based version of this project. The application now runs on Express and PostgreSQL; see [README.md](../README.md) and [docs/API.md](API.md) for the current design. Statements below about SQLite, `node:sqlite` and the old file layout no longer apply.
+
 Paste or attach this file at the start of the Stage 4 conversation, together with the Stage 3 ZIP. Stage 4 has **not** been started. Nothing has been committed or pushed.
 
 ## Status
