@@ -1,12 +1,12 @@
 'use strict';
 
-// Automated checks for Stage 1 (server, static files, database startup).
-// The Stage 2 API tests are in api.test.js. Run everything with:  npm test
+// Automated checks for the server, static files and database startup.
+// The API tests are in api.test.js. Run everything with:  npm test
 //
 // Each test that needs a server starts the REAL backend/server.js as a child
 // process on a random free port (PORT=0), pointed at:
 //   - a throw-away COPY of the frontend plus a few extra test files, and
-//   - a throw-away SQLite database.
+//   - a throw-away PostgreSQL schema inside the TEST_DATABASE_URL database.
 // Your real database and your browser's localStorage are never touched.
 
 const { test, describe, before, after } = require('node:test');
@@ -16,6 +16,8 @@ const http = require('node:http');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+
+const { TEST_URL, createTestSchema, admin } = require('./helpers/pg-test-db');
 
 const SERVER_JS = path.join(__dirname, '..', 'server.js');
 const REAL_FRONTEND = path.join(__dirname, '..', '..', 'frontend');
@@ -65,25 +67,27 @@ try {
   // Creating symlinks needs special rights on Windows. Those tests are skipped.
 }
 
-let dbCounter = 0;
-function newDbPath() {
-  dbCounter += 1;
-  return path.join(tmpRoot, 'data', `test-${dbCounter}.db`);
-}
+// Servers started by these tests share this schema unless a test asks for its own.
+let testSchema;
 
-after(() => {
+before(async () => {
+  testSchema = await createTestSchema();
+});
+
+after(async () => {
   fs.rmSync(tmpRoot, { recursive: true, force: true });
+  await testSchema.drop();
 });
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function buildEnv({ dbPath, frontendRoot, env }) {
+function buildEnv({ databaseUrl, frontendRoot, env }) {
   const result = {
     ...process.env,
     PORT: '0',
-    EXPENSE_DB_PATH: dbPath || newDbPath(),
+    DATABASE_URL: databaseUrl || testSchema.url,
     FRONTEND_ROOT: frontendRoot === undefined ? sandboxFrontend : frontendRoot,
     ...env
   };
@@ -208,15 +212,17 @@ describe('running server', () => {
       assert.equal(json.data.server.running, true);
       assert.equal(typeof json.data.server.uptimeSeconds, 'number');
       assert.equal(json.data.database.ready, true);
-      assert.equal(json.data.database.engine, 'node:sqlite');
+      assert.equal(json.data.database.engine, 'postgresql');
       assert.equal(json.data.database.schemaVersion, require('../db').LATEST_VERSION);
-      assert.equal(json.data.database.foreignKeys, true);
+      assert.match(json.data.database.serverVersion, /^\d+/);
     });
 
-    test('does not leak filesystem paths', async () => {
+    test('does not leak filesystem paths or connection details', async () => {
       const response = await request(server.port, 'GET', '/api/health');
       assert.ok(!response.text.includes(tmpRoot));
       assert.ok(!/\.db/.test(response.text));
+      assert.ok(!response.text.includes('postgres://'));
+      assert.ok(!response.text.includes(new URL(TEST_URL).password) || new URL(TEST_URL).password === '');
     });
 
     test('HEAD returns headers and no body', async () => {
@@ -444,93 +450,89 @@ describe('real project layout: server source is not exposed', () => {
 
 describe('db module', () => {
   const db = require('../db');
-  const { DatabaseSync } = require('node:sqlite');
 
-  test('reports not ready before initialization', () => {
-    assert.equal(db.getStatus().ready, false);
-    assert.throws(() => db.getDb(), /not initialized/);
+  // Each test uses its own empty schema and always closes the pool afterwards.
+  async function withFreshSchema(work) {
+    const schema = await createTestSchema();
+    try {
+      await work(schema);
+    } finally {
+      await db.closeDatabase();
+      await schema.drop();
+    }
+  }
+
+  test('reports not ready before initialization', async () => {
+    assert.equal((await db.getStatus()).ready, false);
+    await assert.rejects(db.query('SELECT 1'), /not initialized/);
+    assert.throws(() => db.getPool(), /not initialized/);
   });
 
-  test('initializes, enforces foreign keys, and closes cleanly', () => {
-    const dbPath = newDbPath();
-    const connection = db.initDatabase(dbPath);
-    try {
-      const status = db.getStatus();
+  test('initializes, enforces foreign keys, and closes cleanly', async () => {
+    await withFreshSchema(async schema => {
+      const pool = await db.initDatabase({ connectionString: TEST_URL, schema: schema.schema });
+      const status = await db.getStatus();
       assert.equal(status.ready, true);
       assert.equal(status.schemaVersion, db.LATEST_VERSION);
-      assert.equal(status.foreignKeys, true);
-      assert.equal(db.initDatabase(dbPath), connection, 'second init returns the same connection');
-      assert.ok(fs.existsSync(dbPath), 'database file was created on disk');
+      assert.equal(await db.initDatabase({ connectionString: TEST_URL, schema: schema.schema }), pool, 'second init returns the same pool');
 
-      // Prove foreign keys are really enforced, not just switched on.
-      connection.exec(`
-        CREATE TABLE scratch_parent (id INTEGER PRIMARY KEY);
-        CREATE TABLE scratch_child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES scratch_parent(id));
-      `);
-      assert.throws(
-        () => connection.exec('INSERT INTO scratch_child (parent_id) VALUES (999)'),
-        /FOREIGN KEY constraint failed/
-      );
-    } finally {
-      db.closeDatabase();
-    }
+      // Prove foreign keys are really enforced, not just declared.
+      await db.query('CREATE TABLE scratch_parent (id INTEGER PRIMARY KEY)');
+      await db.query('CREATE TABLE scratch_child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES scratch_parent(id))');
+      await assert.rejects(db.query('INSERT INTO scratch_child (id, parent_id) VALUES (1, 999)'), /foreign key constraint/);
 
-    assert.equal(db.getStatus().ready, false);
-    assert.doesNotThrow(() => db.closeDatabase(), 'closing twice is safe');
+      await db.closeDatabase();
+      assert.equal((await db.getStatus()).ready, false);
+      await db.closeDatabase(); // closing twice is safe
+    });
   });
 
-  test('does not seed any financial data', () => {
-    const dbPath = newDbPath();
-    const connection = db.initDatabase(dbPath);
-    try {
-      const tables = connection
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
-        .all()
-        .map(row => row.name);
-      // Stage 2 added the three financial tables. They must start empty.
-      assert.deepEqual(tables.sort(), ['accounts', 'app_meta', 'categories', 'transactions']);
-      assert.equal(connection.prepare('SELECT COUNT(*) AS n FROM app_meta').get().n, 1);
+  test('does not seed any financial data', async () => {
+    await withFreshSchema(async schema => {
+      await db.initDatabase({ connectionString: TEST_URL, schema: schema.schema });
+      const tables = (await db.query(
+        'SELECT table_name FROM information_schema.tables WHERE table_schema = $1 ORDER BY table_name', [schema.schema]
+      )).rows.map(row => row.table_name);
+      assert.deepEqual(tables, ['accounts', 'app_meta', 'categories', 'schema_migrations', 'transactions']);
+      assert.equal((await db.query('SELECT COUNT(*) AS n FROM app_meta')).rows[0].n, 1);
       for (const table of ['accounts', 'categories', 'transactions']) {
-        assert.equal(connection.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0, `${table} is empty`);
+        assert.equal((await db.query(`SELECT COUNT(*) AS n FROM ${table}`)).rows[0].n, 0, `${table} is empty`);
       }
-    } finally {
-      db.closeDatabase();
-    }
+    });
   });
 
-  test('re-opening an existing database does not re-run migrations', () => {
-    const dbPath = newDbPath();
-    db.initDatabase(dbPath);
-    const first = db.getDb().prepare("SELECT value FROM app_meta WHERE key = 'created_at'").get().value;
-    db.closeDatabase();
+  test('re-opening an existing database does not re-run migrations', async () => {
+    await withFreshSchema(async schema => {
+      const options = { connectionString: TEST_URL, schema: schema.schema };
+      await db.initDatabase(options);
+      const first = (await db.query("SELECT value FROM app_meta WHERE key = 'created_at'")).rows[0].value;
+      await db.closeDatabase();
 
-    db.initDatabase(dbPath);
-    const second = db.getDb().prepare("SELECT value FROM app_meta WHERE key = 'created_at'").get().value;
-    const rows = db.getDb().prepare('SELECT COUNT(*) AS n FROM app_meta').get().n;
-    db.closeDatabase();
-
-    assert.equal(second, first);
-    assert.equal(rows, 1);
+      await db.initDatabase(options);
+      const second = (await db.query("SELECT value FROM app_meta WHERE key = 'created_at'")).rows[0].value;
+      const rows = (await db.query('SELECT COUNT(*) AS n FROM app_meta')).rows[0].n;
+      assert.equal(second, first);
+      assert.equal(rows, 1);
+    });
   });
 
-  test('refuses a database created by a newer version of the app', () => {
-    const dbPath = newDbPath();
-    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-    const raw = new DatabaseSync(dbPath);
-    raw.exec('PRAGMA user_version = 99');
-    raw.close();
+  test('refuses a database created by a newer version of the app', async () => {
+    await withFreshSchema(async schema => {
+      const options = { connectionString: TEST_URL, schema: schema.schema };
+      await db.initDatabase(options);
+      await db.query('INSERT INTO schema_migrations (version) VALUES (99)');
+      await db.closeDatabase();
 
-    assert.throws(() => db.initDatabase(dbPath), /newer than this app/);
-    assert.equal(db.getStatus().ready, false);
+      await assert.rejects(db.initDatabase(options), /newer than this app/);
+      assert.equal((await db.getStatus()).ready, false);
+    });
   });
 
-  test('refuses a file that is not a SQLite database', () => {
-    const dbPath = newDbPath();
-    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-    fs.writeFileSync(dbPath, 'this is definitely not a sqlite database, just some text '.repeat(20));
-
-    assert.throws(() => db.initDatabase(dbPath));
-    assert.equal(db.getStatus().ready, false);
+  test('refuses a connection to a server that is not there', async () => {
+    const url = new URL(TEST_URL);
+    url.port = '1';
+    await assert.rejects(db.initDatabase({ connectionString: url.toString() }), /Cannot connect to PostgreSQL/);
+    assert.equal((await db.getStatus()).ready, false);
   });
 });
 
@@ -539,39 +541,56 @@ describe('db module', () => {
 // ---------------------------------------------------------------------------
 
 describe('persistence', () => {
-  test('the same database file survives a restart and is not re-initialized', async () => {
-    const { DatabaseSync } = require('node:sqlite');
-    const dbPath = newDbPath();
-
-    const readMeta = () => {
-      const raw = new DatabaseSync(dbPath, { readOnly: true });
-      try {
-        return {
-          createdAt: raw.prepare("SELECT value FROM app_meta WHERE key = 'created_at'").get().value,
-          version: raw.prepare('PRAGMA user_version').get().user_version,
-          rows: raw.prepare('SELECT COUNT(*) AS n FROM app_meta').get().n
-        };
-      } finally {
-        raw.close();
-      }
+  test('the same database survives a restart and is not re-initialized', async () => {
+    const own = await createTestSchema();
+    const readMeta = async () => {
+      const meta = await admin(`SELECT value FROM ${own.schema}.app_meta WHERE key = 'created_at'`);
+      const versions = await admin(`SELECT COALESCE(MAX(version), 0) AS version FROM ${own.schema}.schema_migrations`);
+      const rows = await admin(`SELECT COUNT(*) AS n FROM ${own.schema}.app_meta`);
+      return { createdAt: meta.rows[0].value, version: versions.rows[0].version, rows: Number(rows.rows[0].n) };
     };
 
-    const first = await startServer({ dbPath });
-    await stopServer(first.child);
-    const before = readMeta();
+    try {
+      const first = await startServer({ databaseUrl: own.url });
+      await stopServer(first.child);
+      const before = await readMeta();
 
-    // Wait one second so a re-created database would get a different timestamp.
-    await new Promise(resolve => setTimeout(resolve, 1100));
+      // Wait one second so a re-created database would get a different timestamp.
+      await new Promise(resolve => setTimeout(resolve, 1100));
 
-    const second = await startServer({ dbPath });
-    const health = parseJson(await request(second.port, 'GET', '/api/health'));
-    await stopServer(second.child);
-    const after = readMeta();
+      const second = await startServer({ databaseUrl: own.url });
+      const health = parseJson(await request(second.port, 'GET', '/api/health'));
+      await stopServer(second.child);
+      const after = await readMeta();
 
-    assert.equal(health.data.database.ready, true);
-    assert.equal(after.createdAt, before.createdAt);
-    assert.equal(after.version, require('../db').LATEST_VERSION);
-    assert.equal(after.rows, 1);
+      assert.equal(health.data.database.ready, true);
+      assert.equal(after.createdAt, before.createdAt);
+      assert.equal(after.version, require('../db').LATEST_VERSION);
+      assert.equal(after.rows, 1);
+    } finally {
+      await own.drop();
+    }
+  });
+
+  test('records saved through the API are still there after a restart', async () => {
+    const own = await createTestSchema();
+    try {
+      const first = await startServer({ databaseUrl: own.url });
+      const created = await fetch(`http://127.0.0.1:${first.port}/api/accounts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: 'acc-keep', name: 'Kept', type: 'bank', balance: 12.34 })
+      });
+      assert.equal(created.status, 201);
+      await stopServer(first.child);
+
+      const second = await startServer({ databaseUrl: own.url });
+      const list = await (await fetch(`http://127.0.0.1:${second.port}/api/accounts`)).json();
+      await stopServer(second.child);
+      assert.deepEqual(list.data.map(account => [account.id, account.name, account.balance]), [['acc-keep', 'Kept', 12.34]]);
+    } finally {
+      await own.drop();
+    }
   });
 });
 
@@ -580,23 +599,31 @@ describe('persistence', () => {
 // ---------------------------------------------------------------------------
 
 describe('startup failures', () => {
-  test('database path is a directory -> exits 1, says why, never reports running', async () => {
-    const dirAsDb = path.join(tmpRoot, 'a-directory');
-    fs.mkdirSync(dirAsDb, { recursive: true });
+  test('PostgreSQL not reachable -> exits 1, says why, never reports running', async () => {
+    const url = new URL(TEST_URL);
+    url.port = '1';
 
-    const result = await runUntilExit({ dbPath: dirAsDb });
+    const result = await runUntilExit({ databaseUrl: url.toString() });
     assert.equal(result.code, 1);
-    assert.match(result.stderr, /Database initialization failed/);
+    assert.match(result.stderr, /Database initialization failed: Cannot connect to PostgreSQL/);
     assert.ok(!result.stdout.includes('running at'));
   });
 
-  test('database file is corrupt -> exits 1, says why, never reports running', async () => {
-    const corrupt = path.join(tmpRoot, 'corrupt.db');
-    fs.writeFileSync(corrupt, 'not a database '.repeat(100));
+  test('wrong password -> exits 1, says why, and never prints the password', async () => {
+    const url = new URL(TEST_URL);
+    url.password = 'wrong-password-ZQ7';
 
-    const result = await runUntilExit({ dbPath: corrupt });
+    const result = await runUntilExit({ databaseUrl: url.toString() });
     assert.equal(result.code, 1);
-    assert.match(result.stderr, /Database initialization failed/);
+    assert.match(result.stderr, /rejected the user name or password/);
+    assert.ok(!result.stderr.includes('wrong-password-ZQ7') && !result.stdout.includes('wrong-password-ZQ7'));
+    assert.ok(!result.stdout.includes('running at'));
+  });
+
+  test('DATABASE_URL not set -> exits 1 and explains how to set it', async () => {
+    const result = await runUntilExit({ env: { DATABASE_URL: '' } });
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /Database initialization failed: DATABASE_URL is not set/);
     assert.ok(!result.stdout.includes('running at'));
   });
 

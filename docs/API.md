@@ -97,7 +97,7 @@ POST /api/transactions   (amount 1.234, income type with an expense category)
 
 ### `POST /api/import/preview` and `POST /api/import`
 
-Both take the **legacy backup** document (the file the Settings page downloads) and run exactly the same code. `preview` plans the import inside a SQLite transaction and **rolls it back**, so it never changes the database. `import` runs the same plan, **commits** it, and requires `"confirm": true` (otherwise `400 CONFIRMATION_REQUIRED`). The import re-plans against the database as it is at that moment; an earlier preview is not trusted.
+Both take the **legacy backup** document (the file the Settings page downloads) and run exactly the same code. Both run inside one PostgreSQL transaction on one connection (`BEGIN` ... `COMMIT`). `preview` plans the import and then **rolls the transaction back**, so it never changes the database (it can only leave gaps in the numbering of new category ids, because PostgreSQL never hands an id out twice). A transaction-level advisory lock makes imports run one at a time, so two simultaneous imports of the same file give one `imported` result and one `duplicateInDatabase` result instead of an error. If anything fails unexpectedly, the whole transaction is rolled back (`500 IMPORT_FAILED` / `PREVIEW_FAILED`, "nothing was saved") and no partial data remains. Every record that was written is read back and compared before `COMMIT`. `import` runs the same plan, **commits** it, and requires `"confirm": true` (otherwise `400 CONFIRMATION_REQUIRED`). The import re-plans against the database as it is at that moment; an earlier preview is not trusted.
 
 ```json
 {
@@ -169,7 +169,7 @@ A versioned JSON export of the database (for backup and checking):
 }
 ```
 
-Records have the same shape the list endpoints return. This document is **not** importable (the importer rejects it with a clear message), and it is read-only: exporting changes nothing.
+The three lists are read in one read-only `REPEATABLE READ` transaction, so they come from one consistent snapshot even if another request is writing at the same time. Records have the same shape the list endpoints return. This document is **not** importable (the importer rejects it with a clear message), and it is read-only: exporting changes nothing.
 
 ## Error codes
 

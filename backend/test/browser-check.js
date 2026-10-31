@@ -7,7 +7,8 @@
 //   npx playwright install chromium         (one time)
 //   node backend/test/browser-check.js
 //
-// It starts the real server on a random port with a throw-away database, opens
+// It starts the real server on a random port with a throw-away PostgreSQL
+// schema (needs TEST_DATABASE_URL, see .env.example), opens
 // the real pages in a headless browser, uses them like a person would, and
 // compares what the pages show with what the database API says. Your real
 // database and your real browser profile are never touched.
@@ -27,7 +28,7 @@ try {
 
 const SERVER_JS = path.join(__dirname, '..', 'server.js');
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'expense-browser-'));
-const dbPath = path.join(tmpRoot, 'browser.db');
+let testSchema = null; // a throw-away PostgreSQL schema in the TEST_DATABASE_URL database (see main())
 
 const results = [];
 let serverProcess = null;
@@ -40,7 +41,7 @@ let origin = '';
 function startServer() {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [SERVER_JS], {
-      env: { ...process.env, PORT: process.env.CHECK_PORT || '0', EXPENSE_DB_PATH: dbPath },
+      env: { ...process.env, PORT: process.env.CHECK_PORT || '0', DATABASE_URL: testSchema.url },
       stdio: ['ignore', 'pipe', 'pipe']
     });
     let output = '';
@@ -147,6 +148,7 @@ const storageKeys = page => page.evaluate(() => Object.keys(localStorage).sort()
 // ---------------------------------------------------------------------------
 
 async function main() {
+  testSchema = await require('./helpers/pg-test-db').createTestSchema();
   await startServer();
   const browser = await playwright.chromium.launch();
   const today = new Date();
@@ -726,6 +728,7 @@ main()
   .finally(async () => {
     await stopServer();
     fs.rmSync(tmpRoot, { recursive: true, force: true });
+    if (testSchema) await testSchema.drop();
     const failed = results.filter(result => !result.ok);
     console.log(`\n${results.length - failed.length} passed, ${failed.length} failed, ${results.length} total`);
     process.exit(failed.length === 0 ? 0 : 1);

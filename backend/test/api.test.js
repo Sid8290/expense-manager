@@ -1,30 +1,30 @@
 'use strict';
 
-// Automated checks for the Stage 2 API (accounts, categories, transactions).
+// Automated checks for the API (accounts, categories, transactions).
 // Run with:  npm test
 //
 // Unlike server.test.js, this file runs the real HTTP server INSIDE the test
 // process (createServer from server.js) on a random port, connected to a
-// throw-away SQLite file in the operating system's temp folder. Requests are
-// real HTTP requests. Your real database and your browser's localStorage are
-// never touched.
+// throw-away PostgreSQL schema inside the TEST_DATABASE_URL database. Requests
+// are real HTTP requests. Your real database and your browser's localStorage
+// are never touched.
 
 const { test, describe, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
-const { DatabaseSync } = require('node:sqlite');
 
 const db = require('../db');
-const { createServer } = require('../server');
+const errors = require('../db-errors');
+const { createServer, toApiError } = require('../server');
+const { TEST_URL, createTestSchema, admin } = require('./helpers/pg-test-db');
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'expense-api-test-'));
-let dbCounter = 0;
-function newDbPath() {
-  dbCounter += 1;
-  return path.join(tmpRoot, `api-${dbCounter}.db`);
+// All tests in this file use one throw-away schema. The application_name lets a
+// test drop THIS file's connections without touching other test files'.
+let testSchema;
+function connectionOptions(schema = testSchema) {
+  const url = new URL(TEST_URL);
+  url.searchParams.set('application_name', schema.schema);
+  return { connectionString: url.toString(), schema: schema.schema };
 }
 
 let server;
@@ -48,19 +48,20 @@ function stopListening() {
 }
 
 before(async () => {
-  db.initDatabase(newDbPath());
+  testSchema = await createTestSchema();
+  await db.initDatabase(connectionOptions());
   await listen();
 });
 
 after(async () => {
   await stopListening();
-  db.closeDatabase();
-  fs.rmSync(tmpRoot, { recursive: true, force: true });
+  await db.closeDatabase();
+  await testSchema.drop();
 });
 
 // Every test starts from empty tables (the schema itself stays).
-beforeEach(() => {
-  db.getDb().exec('DELETE FROM transactions; DELETE FROM categories; DELETE FROM accounts;');
+beforeEach(async () => {
+  await db.query('DELETE FROM transactions; DELETE FROM categories; DELETE FROM accounts;');
 });
 
 // ---------------------------------------------------------------------------
@@ -101,7 +102,7 @@ function assertError(response, status, code) {
   assert.equal(response.json.ok, false);
   assert.equal(response.json.error.code, code, response.text);
   assert.equal(typeof response.json.error.message, 'string');
-  assert.doesNotMatch(response.text, /node_modules|\.js:\d|\bat .*\(|expense-api-test|SQLITE|sqlite/i, 'no internals leaked');
+  assert.doesNotMatch(response.text, /node_modules|\.js:\d|\bat .*\(|expense-api-test|SQLITE|sqlite|postgres|SQLSTATE|violates|relation "|pg_/i, 'no internals leaked');
 }
 
 function fieldsOf(response) {
@@ -200,8 +201,8 @@ describe('accounts', () => {
 
     const again = await call('GET', `/api/accounts/${account.id}`);
     assert.deepEqual(again.json.data, response.json.data);
-    const row = db.getDb().prepare('SELECT * FROM accounts WHERE id = ?').get(account.id);
-    assert.equal(row.balance_minor, 25075, 'stored as whole paise');
+    const { rows } = await db.query('SELECT * FROM accounts WHERE id = $1', [account.id]);
+    assert.equal(rows[0].balance_minor, 25075, 'stored as whole paise');
   });
 
   test('update of a missing account is 404', async () => {
@@ -448,8 +449,8 @@ describe('transactions', () => {
         type: 'income', description: 'x', categoryId: category.id, accountId: account.id, amount, date: '2025-01-01'
       });
       assert.equal(response.json.data.amount, amount, `amount ${amount}`);
-      const row = db.getDb().prepare('SELECT amount_minor FROM transactions WHERE id = ?').get(response.json.data.id);
-      assert.equal(row.amount_minor, Math.round(amount * 100));
+      const { rows } = await db.query('SELECT amount_minor FROM transactions WHERE id = $1', [response.json.data.id]);
+      assert.equal(rows[0].amount_minor, Math.round(amount * 100));
     }
   });
 
@@ -697,8 +698,8 @@ describe('request handling', () => {
     assert.equal((await call('GET', `/api/accounts/${encodeURIComponent("x' OR '1'='1")}`)).status, 400);
     assertError(await call('GET', `/api/accounts/${encodeURIComponent("acc-1' OR '1'='1")}`), 400, 'INVALID_ID');
     assert.equal((await call('GET', '/api/accounts')).json.data.length, 1);
-    const tables = db.getDb().prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='accounts'").all();
-    assert.equal(tables.length, 1);
+    const tables = await db.query(`SELECT to_regclass('accounts') AS accounts`);
+    assert.ok(tables.rows[0].accounts, 'the accounts table still exists');
   });
 
   test('unicode text round-trips', async () => {
@@ -719,60 +720,226 @@ describe('request handling', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Database constraints (talking to SQLite directly, bypassing the API checks)
+// Database constraints (talking to PostgreSQL directly, bypassing the API checks)
 // ---------------------------------------------------------------------------
 
 describe('database constraints', () => {
   const insertAccount = () =>
-    db.getDb().prepare("INSERT INTO accounts (id, name, type, balance_minor) VALUES ('a1', 'Cash', 'cash', 0)").run();
-  const insertCategory = type =>
-    Number(db.getDb().prepare('INSERT INTO categories (name, type) VALUES (?, ?)').run(`c-${type}`, type).lastInsertRowid);
+    db.query("INSERT INTO accounts (id, name, type, balance_minor) VALUES ('a1', 'Cash', 'cash', 0)");
+  const insertCategory = async type =>
+    (await db.query('INSERT INTO categories (name, type) VALUES ($1, $2) RETURNING id', [`c-${type}`, type])).rows[0].id;
   const insertTxn = (overrides = {}) => {
     const row = { id: 't1', type: 'income', description: 'd', category_id: 0, account_id: 'a1', amount_minor: 100, note: '', date: '2025-01-01', created_at: 1, ...overrides };
-    return db.getDb()
-      .prepare('INSERT INTO transactions (id, type, description, category_id, account_id, amount_minor, note, date, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(row.id, row.type, row.description, row.category_id, row.account_id, row.amount_minor, row.note, row.date, row.created_at);
+    return db.query(
+      'INSERT INTO transactions (id, type, description, category_id, account_id, amount_minor, note, date, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
+      [row.id, row.type, row.description, row.category_id, row.account_id, row.amount_minor, row.note, row.date, row.created_at]
+    );
   };
+  // Asserts that the database refuses with the given SQLSTATE code.
+  const refuses = (promise, code) => assert.rejects(promise, error => error.code === code);
 
-  test('foreign key enforcement is switched on for the connection', () => {
-    assert.equal(db.getDb().prepare('PRAGMA foreign_keys').get().foreign_keys, 1);
+  test('foreign keys are declared and enforced by the database', async () => {
+    const { rows } = await db.query(
+      `SELECT COUNT(*) AS n FROM pg_constraint WHERE contype = 'f' AND conrelid = 'transactions'::regclass`
+    );
+    assert.equal(rows[0].n, 2, 'one foreign key to accounts, one to categories');
   });
 
-  test('a transaction cannot reference a missing account or category', () => {
-    insertAccount();
-    const category = insertCategory('income');
-    assert.throws(() => insertTxn({ category_id: category, account_id: 'ghost' }), /FOREIGN KEY constraint failed/);
-    assert.throws(() => insertTxn({ category_id: 9999 }), /FOREIGN KEY constraint failed/);
-    assert.doesNotThrow(() => insertTxn({ category_id: category }));
+  test('a transaction cannot reference a missing account or category', async () => {
+    await insertAccount();
+    const category = await insertCategory('income');
+    await refuses(insertTxn({ category_id: category, account_id: 'ghost' }), '23503');
+    await refuses(insertTxn({ category_id: 9999 }), '23503');
+    await insertTxn({ category_id: category });
   });
 
-  test('the category type must match the transaction type (composite foreign key)', () => {
-    insertAccount();
-    const expense = insertCategory('expense');
-    assert.throws(() => insertTxn({ type: 'income', category_id: expense }), /FOREIGN KEY constraint failed/);
-    assert.doesNotThrow(() => insertTxn({ type: 'expense', category_id: expense }));
+  test('the category type must match the transaction type (composite foreign key)', async () => {
+    await insertAccount();
+    const expense = await insertCategory('expense');
+    await refuses(insertTxn({ type: 'income', category_id: expense }), '23503');
+    await insertTxn({ type: 'expense', category_id: expense });
   });
 
-  test('referenced accounts and categories cannot be deleted, and a used category cannot change type', () => {
-    insertAccount();
-    const category = insertCategory('income');
-    insertTxn({ category_id: category });
-    assert.throws(() => db.getDb().exec("DELETE FROM accounts WHERE id = 'a1'"), /FOREIGN KEY constraint failed/);
-    assert.throws(() => db.getDb().exec(`DELETE FROM categories WHERE id = ${category}`), /FOREIGN KEY constraint failed/);
-    assert.throws(() => db.getDb().exec(`UPDATE categories SET type = 'expense' WHERE id = ${category}`), /FOREIGN KEY constraint failed/);
-    assert.equal(db.getDb().prepare('SELECT COUNT(*) AS n FROM accounts').get().n, 1);
+  test('referenced accounts and categories cannot be deleted, and a used category cannot change type', async () => {
+    await insertAccount();
+    const category = await insertCategory('income');
+    await insertTxn({ category_id: category });
+    await refuses(db.query("DELETE FROM accounts WHERE id = 'a1'"), '23503');
+    await refuses(db.query('DELETE FROM categories WHERE id = $1', [category]), '23503');
+    await refuses(db.query(`UPDATE categories SET type = 'expense' WHERE id = $1`, [category]), '23503');
+    assert.equal((await db.query('SELECT COUNT(*) AS n FROM accounts')).rows[0].n, 1);
   });
 
-  test('CHECK and UNIQUE constraints reject bad rows even without the API', () => {
-    insertAccount();
-    const category = insertCategory('income');
-    assert.throws(() => insertTxn({ category_id: category, amount_minor: 0 }), /CHECK constraint failed/);
-    assert.throws(() => insertTxn({ category_id: category, amount_minor: -5 }), /CHECK constraint failed/);
-    assert.throws(() => insertTxn({ category_id: category, date: 'yesterday' }), /CHECK constraint failed/);
-    assert.throws(() => insertTxn({ category_id: category, description: '' }), /CHECK constraint failed/);
-    assert.throws(() => db.getDb().exec("INSERT INTO accounts (id, name, type, balance_minor) VALUES ('a2', 'x', 'wallet', 0)"), /CHECK constraint failed/);
-    assert.throws(() => db.getDb().exec("INSERT INTO accounts (id, name, type, balance_minor) VALUES ('a2', 'CASH', 'cash', 0)"), /UNIQUE constraint failed/);
-    assert.throws(() => db.getDb().exec("INSERT INTO categories (name, type) VALUES ('C-INCOME', 'income')"), /UNIQUE constraint failed/);
+  test('CHECK and UNIQUE constraints reject bad rows even without the API', async () => {
+    await insertAccount();
+    const category = await insertCategory('income');
+    await refuses(insertTxn({ category_id: category, amount_minor: 0 }), '23514');
+    await refuses(insertTxn({ category_id: category, amount_minor: -5 }), '23514');
+    await refuses(insertTxn({ category_id: category, date: 'yesterday' }), '23514');
+    await refuses(insertTxn({ category_id: category, description: '' }), '23514');
+    await refuses(db.query("INSERT INTO accounts (id, name, type, balance_minor) VALUES ('a2', 'x', 'wallet', 0)"), '23514');
+    await refuses(db.query("INSERT INTO accounts (id, name, type, balance_minor) VALUES ('a2', 'CASH', 'cash', 0)"), '23505');
+    await refuses(db.query("INSERT INTO categories (name, type) VALUES ('C-INCOME', 'income')"), '23505');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PostgreSQL-specific behaviour of the API
+// ---------------------------------------------------------------------------
+
+describe('PostgreSQL behaviour', () => {
+  test('concurrent creates of the same account: exactly one wins, the rest are 409', async () => {
+    const responses = await Promise.all(Array.from({ length: 12 }, () =>
+      call('POST', '/api/accounts', { name: 'Race', type: 'cash', balance: 1 })
+    ));
+    const statuses = responses.map(response => response.status).sort();
+    assert.equal(statuses.filter(status => status === 201).length, 1, statuses.join());
+    for (const response of responses.filter(item => item.status !== 201)) {
+      assertError(response, 409, 'CONFLICT'); // from the pre-check or from the unique index
+    }
+    assert.equal((await db.query('SELECT COUNT(*) AS n FROM accounts')).rows[0].n, 1);
+  });
+
+  test('concurrent creates with the same transaction id: exactly one wins', async () => {
+    const account = await mkAccount();
+    const category = await mkCategory();
+    const responses = await Promise.all(Array.from({ length: 8 }, () =>
+      call('POST', '/api/transactions', { id: 'txn-same', type: 'income', description: 'x', categoryId: category.id, accountId: account.id, amount: 5, date: '2025-01-01' })
+    ));
+    assert.equal(responses.filter(response => response.status === 201).length, 1);
+    for (const response of responses.filter(item => item.status !== 201)) assertError(response, 409, 'CONFLICT');
+    assert.equal((await db.query('SELECT COUNT(*) AS n FROM transactions')).rows[0].n, 1);
+  });
+
+  test('account balances stay consistent with the transactions, including very large amounts', async () => {
+    const wallet = await mkAccount({ name: 'Wallet', balance: 100.1 });
+    const bank = await mkAccount({ name: 'Bank', type: 'bank', balance: 0 });
+    const salary = await mkCategory();
+    const food = await mkCategory({ name: 'Food', type: 'expense' });
+    const plan = [
+      ['income', salary, wallet, 1000000000], ['income', salary, wallet, 1000000000], ['income', salary, bank, 1000000000],
+      ['expense', food, wallet, 0.1], ['expense', food, wallet, 0.2], ['expense', food, bank, 999999999.99], ['income', salary, bank, 19.99]
+    ];
+    for (const [type, category, account, amount] of plan) {
+      const response = await call('POST', '/api/transactions', { type, description: 'x', categoryId: category.id, accountId: account.id, amount, date: '2025-01-01' });
+      assert.equal(response.status, 201, response.text);
+    }
+
+    // Expected values worked out independently, in whole paise.
+    const paise = value => Math.round(value * 100);
+    const expected = account => plan.reduce(
+      (sum, [type, , owner, amount]) => (owner.id === account.id ? sum + (type === 'income' ? paise(amount) : -paise(amount)) : sum),
+      paise(account.balance)
+    ) / 100;
+
+    for (const account of [wallet, bank]) {
+      const response = await call('GET', `/api/accounts/${account.id}`);
+      assert.equal(response.json.data.currentBalance, expected(account), account.name);
+    }
+    const list = (await call('GET', '/api/accounts')).json.data;
+    assert.deepEqual(list.map(item => item.currentBalance), [expected(wallet), expected(bank)]);
+    assert.equal(wallet.balance, 100.1, 'the opening balance is not changed by transactions');
+  });
+
+  test('deleting and editing transactions moves the balance the same way', async () => {
+    const { transaction, account, category } = await mkTransaction({ amount: 50, type: 'income' });
+    assert.equal((await call('GET', `/api/accounts/${account.id}`)).json.data.currentBalance, 50);
+    const edited = await call('PUT', `/api/transactions/${transaction.id}`, {
+      type: 'income', description: 'Pay', categoryId: category.id, accountId: account.id, amount: 70.25, note: '', date: '2025-01-15'
+    });
+    assert.equal(edited.status, 200);
+    assert.equal((await call('GET', `/api/accounts/${account.id}`)).json.data.currentBalance, 70.25);
+    assert.equal((await call('DELETE', `/api/transactions/${transaction.id}`)).status, 200);
+    assert.equal((await call('GET', `/api/accounts/${account.id}`)).json.data.currentBalance, 0);
+  });
+
+  test('ids beyond the 32-bit category column are "not found" / invalid, never a 500', async () => {
+    assertError(await call('GET', '/api/categories/99999999999'), 404, 'NOT_FOUND');
+    assertError(await call('PUT', '/api/categories/99999999999', { name: 'X', type: 'income' }), 404, 'NOT_FOUND');
+    assertError(await call('DELETE', '/api/categories/99999999999'), 404, 'NOT_FOUND');
+    const account = await mkAccount();
+    const response = await call('POST', '/api/transactions', {
+      type: 'income', description: 'x', categoryId: 99999999999, accountId: account.id, amount: 1, date: '2025-01-01'
+    });
+    assertError(response, 400, 'VALIDATION_ERROR');
+    assert.deepEqual(fieldsOf(response), ['categoryId']);
+  });
+
+  describe('a write that fails inside the database', () => {
+    // A trigger makes every insert into the table fail with an unexpected error.
+    const arm = table => db.query(`
+      CREATE OR REPLACE FUNCTION boom() RETURNS trigger AS $$ BEGIN RAISE EXCEPTION 'boom-secret-detail'; END; $$ LANGUAGE plpgsql;
+      CREATE TRIGGER boom_trigger BEFORE INSERT ON ${table} FOR EACH ROW EXECUTE FUNCTION boom();
+    `);
+    const disarm = table => db.query(`DROP TRIGGER IF EXISTS boom_trigger ON ${table}`);
+
+    test('is a generic 500, saves nothing, leaks nothing, and does not use up the connection pool', async () => {
+      const account = await mkAccount();
+      const category = await mkCategory();
+      await arm('transactions');
+      const originalConsoleError = console.error;
+      console.error = () => {}; // the server logs each unexpected error; keep the test output readable
+      try {
+        // More failures than the pool has connections (10): every one must give its connection back.
+        for (let round = 0; round < 25; round += 1) {
+          const response = await call('POST', '/api/transactions', {
+            type: 'income', description: 'x', categoryId: category.id, accountId: account.id, amount: 1, date: '2025-01-01'
+          });
+          assertError(response, 500, 'INTERNAL_ERROR');
+          assert.doesNotMatch(response.text, /boom/);
+        }
+        assert.equal((await db.query('SELECT COUNT(*) AS n FROM transactions')).rows[0].n, 0);
+      } finally {
+        console.error = originalConsoleError;
+        await disarm('transactions');
+      }
+      const pool = db.getPool();
+      assert.equal(pool.waitingCount, 0);
+      assert.equal(pool.idleCount, pool.totalCount, 'every connection was given back');
+      assert.equal((await call('GET', '/api/transactions')).status, 200, 'the API still works afterwards');
+      assert.equal((await mkTransaction({ accountId: account.id, categoryId: category.id })).transaction.amount, 10);
+    });
+
+    test('a failing category create leaves no category behind', async () => {
+      await arm('categories');
+      const originalConsoleError = console.error;
+      console.error = () => {};
+      try {
+        assertError(await call('POST', '/api/categories', { name: 'Ghost', type: 'income' }), 500, 'INTERNAL_ERROR');
+      } finally {
+        console.error = originalConsoleError;
+        await disarm('categories');
+      }
+      assert.equal((await call('GET', '/api/categories')).json.data.length, 0);
+    });
+  });
+
+  test('the API recovers when PostgreSQL drops its connections', async () => {
+    await mkAccount();
+    // Disconnect every connection this test file's pool has open (matched by application_name).
+    const originalConsoleError = console.error;
+    console.error = () => {}; // the pool logs each dropped connection; keep the test output readable
+    let response;
+    try {
+      await admin(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = '${testSchema.schema}' AND pid <> pg_backend_pid()`);
+      await new Promise(resolve => setTimeout(resolve, 200));
+      response = await call('GET', '/api/accounts');
+      if (response.status !== 200) response = await call('GET', '/api/accounts'); // at most one request may meet a dead connection
+    } finally {
+      console.error = originalConsoleError;
+    }
+    assert.equal(response.status, 200, response.text);
+    assert.equal(response.json.data.length, 1);
+  });
+
+  test('database errors are mapped to the documented API answers', () => {
+    const asPlain = error => ({ status: error.status, code: error.code, message: error.message });
+    assert.deepEqual(asPlain(toApiError({ code: '23505' })), { status: 409, code: 'CONFLICT', message: 'That value already exists.' });
+    assert.deepEqual(asPlain(toApiError({ code: '23503' })), { status: 409, code: 'CONSTRAINT_VIOLATION', message: 'The record is linked to other records.' });
+    assert.deepEqual(asPlain(toApiError({ code: '23514' })), { status: 400, code: 'VALIDATION_ERROR', message: 'The request contains invalid data.' });
+    assert.equal(toApiError({ code: '42P01', message: 'relation "x" does not exist' }), null, 'anything else stays an unexpected error');
+    assert.equal(toApiError(new Error('boom')), null);
+    assert.equal(errors.isUniqueViolation({ code: '23505' }), true);
   });
 });
 
@@ -781,46 +948,42 @@ describe('database constraints', () => {
 // ---------------------------------------------------------------------------
 
 describe('migration and persistence', () => {
-  test('a Stage 1 (version 1) database upgrades to the latest version and keeps its data', async () => {
-    const oldPath = newDbPath();
-    const raw = new DatabaseSync(oldPath);
-    raw.exec(`
-      CREATE TABLE app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      INSERT INTO app_meta (key, value) VALUES ('created_at', '2020-01-01T00:00:00Z');
-      PRAGMA user_version = 1;
-    `);
-    raw.close();
-
-    await stopListening();
-    db.closeDatabase();
+  test('a version 1 database upgrades to the latest version and keeps its data', async () => {
+    const old = await createTestSchema();
     try {
-      db.initDatabase(oldPath);
-      const status = db.getStatus();
-      assert.equal(status.schemaVersion, db.LATEST_VERSION);
-      assert.equal(status.foreignKeys, true);
-      assert.equal(db.getDb().prepare("SELECT value FROM app_meta WHERE key = 'created_at'").get().value, '2020-01-01T00:00:00Z');
-      for (const table of ['accounts', 'categories', 'transactions']) {
-        assert.equal(db.getDb().prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0);
+      await admin(`
+        CREATE TABLE ${old.schema}.app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO ${old.schema}.app_meta (key, value) VALUES ('created_at', '2020-01-01T00:00:00Z');
+        CREATE TABLE ${old.schema}.schema_migrations (version INTEGER PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now());
+        INSERT INTO ${old.schema}.schema_migrations (version) VALUES (1);
+      `);
+
+      await stopListening();
+      await db.closeDatabase();
+      try {
+        await db.initDatabase(connectionOptions(old));
+        const status = await db.getStatus();
+        assert.equal(status.schemaVersion, db.LATEST_VERSION);
+        assert.equal((await db.query("SELECT value FROM app_meta WHERE key = 'created_at'")).rows[0].value, '2020-01-01T00:00:00Z');
+        for (const table of ['accounts', 'categories', 'transactions']) {
+          assert.equal((await db.query(`SELECT COUNT(*) AS n FROM ${table}`)).rows[0].n, 0);
+        }
+      } finally {
+        await db.closeDatabase();
+        await db.initDatabase(connectionOptions()); // back to the normal test schema
+        await listen();
       }
     } finally {
-      db.closeDatabase();
-      db.initDatabase(newDbPath()); // back to a normal test database
-      await listen();
+      await old.drop();
     }
   });
 
-  test('records created through the API survive a restart of the database and server', async () => {
-    const filePath = newDbPath();
-    await stopListening();
-    db.closeDatabase();
-    db.initDatabase(filePath);
-    await listen();
-
+  test('records created through the API survive a restart of the database connection and server', async () => {
     const { transaction, account, category } = await mkTransaction({ amount: 42.42, note: 'kept' });
 
     await stopListening();
-    db.closeDatabase();
-    db.initDatabase(filePath);
+    await db.closeDatabase();
+    await db.initDatabase(connectionOptions());
     await listen();
 
     assert.deepEqual((await call('GET', '/api/accounts')).json.data.map(item => item.id), [account.id]);
@@ -833,16 +996,17 @@ describe('migration and persistence', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Stage 1 behaviour still works while the API is in use
+// Earlier behaviour still works while the API is in use
 // ---------------------------------------------------------------------------
 
-describe('stage 1 regression (in the same process as the API)', () => {
-  test('health reports the real schema version and foreign keys', async () => {
+describe('server regression (in the same process as the API)', () => {
+  test('health reports the real schema version and database engine', async () => {
     const response = await call('GET', '/api/health');
     assert.equal(response.status, 200);
     assert.equal(response.json.data.status, 'ok');
+    assert.equal(response.json.data.database.engine, 'postgresql');
     assert.equal(response.json.data.database.schemaVersion, db.LATEST_VERSION);
-    assert.equal(response.json.data.database.foreignKeys, true);
+    assert.equal(typeof response.json.data.database.serverVersion, 'string');
   });
 
   test('the dashboard, a page, CSS and JS are still served', async () => {
@@ -871,16 +1035,28 @@ describe('stage 1 regression (in the same process as the API)', () => {
     assert.equal((await call('POST', '/apixyz', { a: 1 })).status, 405, 'static paths only allow GET and HEAD');
     assert.equal((await call('GET', '/api/health')).status, 200);
   });
+
+  test('the import and export endpoints are registered (Part 3) with the usual method rules', async () => {
+    assert.equal((await call('GET', '/api/export')).status, 200);
+    const wrongMethod = await call('POST', '/api/export', {});
+    assertError(wrongMethod, 405, 'METHOD_NOT_ALLOWED');
+    assert.match(wrongMethod.headers.allow, /GET/);
+    assertError(await call('GET', '/api/import'), 405, 'METHOD_NOT_ALLOWED');
+    assertError(await call('POST', '/api/import', { format: 'x' }), 400, 'CONFIRMATION_REQUIRED');
+    assertError(await call('POST', '/api/import', { format: 'x', confirm: true }), 400, 'UNSUPPORTED_FORMAT');
+    assertError(await call('POST', '/api/import/preview', { format: 'x' }), 400, 'UNSUPPORTED_FORMAT');
+  });
+
 });
 
 // ---------------------------------------------------------------------------
 // Database failure while the server is running (keep this block LAST: it
-// closes the connection on purpose and then reopens a fresh one)
+// closes the connection pool on purpose and then reopens a fresh one)
 // ---------------------------------------------------------------------------
 
 describe('database failure at runtime', () => {
   test('API calls return a generic 500 without internals, and health honestly reports 503', async () => {
-    db.closeDatabase();
+    await db.closeDatabase();
     try {
       const response = await call('GET', '/api/accounts');
       assertError(response, 500, 'INTERNAL_ERROR');
@@ -893,7 +1069,7 @@ describe('database failure at runtime', () => {
       assert.equal(health.json.data.database.ready, false);
       assert.equal(health.json.error.code, 'DATABASE_NOT_READY');
     } finally {
-      db.initDatabase(newDbPath());
+      await db.initDatabase(connectionOptions());
     }
     assert.equal((await call('GET', '/api/accounts')).status, 200, 'server recovers once the database is back');
   });

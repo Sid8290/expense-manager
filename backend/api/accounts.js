@@ -7,7 +7,7 @@
 // use cannot be deleted.
 
 const crypto = require('node:crypto');
-const { getDb } = require('../db');
+const db = require('../db');
 const { ApiError, ok, toMinor, fromMinor } = require('./common');
 const v = require('./validate');
 
@@ -19,7 +19,7 @@ const MONEY_TYPES = ['cash', 'bank', 'online'];
 // initial balance + income - expense for this account.
 const SELECT_ACCOUNTS = `
   SELECT a.id, a.name, a.type, a.balance_minor,
-         a.balance_minor + COALESCE(SUM(CASE t.type WHEN 'income' THEN t.amount_minor ELSE -t.amount_minor END), 0)
+         a.balance_minor + COALESCE(SUM(CASE t.type WHEN 'income' THEN t.amount_minor ELSE -t.amount_minor END), 0)::bigint
            AS current_minor
   FROM accounts a
   LEFT JOIN transactions t ON t.account_id = a.id
@@ -35,25 +35,27 @@ function toAccount(row) {
   };
 }
 
-function findAccount(id) {
-  const row = getDb().prepare(`${SELECT_ACCOUNTS} WHERE a.id = ? GROUP BY a.id`).get(id);
+async function findAccount(id) {
+  const { rows } = await db.query(`${SELECT_ACCOUNTS} WHERE a.id = $1 GROUP BY a.id`, [id]);
+  const row = rows[0];
   if (!row) throw new ApiError(404, 'NOT_FOUND', 'No account with this id.');
   return toAccount(row);
 }
 
-function countTransactions(accountId) {
-  return getDb().prepare('SELECT COUNT(*) AS n FROM transactions WHERE account_id = ?').get(accountId).n;
+async function countTransactions(accountId) {
+  const { rows } = await db.query('SELECT COUNT(*) AS n FROM transactions WHERE account_id = $1', [accountId]);
+  return rows[0].n;
 }
 
-// The database already enforces uniqueness with NOCASE, which only knows
-// English letters. Comparing with toLowerCase() as well matches what the
-// frontend does for other alphabets. The table is tiny, so scanning it is fine.
-function nameTaken(name, exceptId) {
+// The database also enforces uniqueness (a unique index on lower(name)), whose
+// idea of "lower case" depends on the database's locale. Comparing with
+// toLowerCase() here matches what the frontend does for other alphabets and
+// gives a friendly message; the index is the safety net. The table is tiny, so
+// scanning it is fine.
+async function nameTaken(name, exceptId) {
   const wanted = name.toLowerCase();
-  return getDb()
-    .prepare('SELECT id, name FROM accounts')
-    .all()
-    .some(row => row.id !== exceptId && row.name.toLowerCase() === wanted);
+  const { rows } = await db.query('SELECT id, name FROM accounts');
+  return rows.some(row => row.id !== exceptId && row.name.toLowerCase() === wanted);
 }
 
 // Checks the body and returns clean values. `isCreate` also allows an optional id.
@@ -71,86 +73,103 @@ function readBody(body, isCreate) {
   return clean;
 }
 
-function allAccounts() {
-  return getDb().prepare(`${SELECT_ACCOUNTS} GROUP BY a.id ORDER BY a.rowid`).all().map(toAccount);
+async function allAccounts() {
+  // seq is the insertion order (what SQLite's hidden rowid used to provide).
+  const { rows } = await db.query(`${SELECT_ACCOUNTS} GROUP BY a.id ORDER BY a.seq`);
+  return rows.map(toAccount);
 }
 
-function list() {
-  return ok(allAccounts());
+async function list() {
+  return ok(await allAccounts());
 }
 
 // Writes one account. The caller has already validated it (readBody) and
 // checked that its id and name are free. `input.id` must be set.
-function insertAccount(input) {
-  getDb()
-    .prepare('INSERT INTO accounts (id, name, type, balance_minor) VALUES (?, ?, ?, ?)')
-    .run(input.id, input.name, input.type, toMinor(input.balance));
+async function insertAccount(input) {
+  await db.query(
+    'INSERT INTO accounts (id, name, type, balance_minor) VALUES ($1, $2, $3, $4)',
+    [input.id, input.name, input.type, toMinor(input.balance)]
+  );
 }
 
-function get({ params }) {
-  return ok(findAccount(v.textIdParam(params.id)));
+async function get({ params }) {
+  return ok(await findAccount(v.textIdParam(params.id)));
 }
 
-function create({ body }) {
+async function create({ body }) {
   const input = readBody(body, true);
   const id = input.id || `acc-${crypto.randomUUID()}`;
 
-  if (getDb().prepare('SELECT 1 FROM accounts WHERE id = ?').get(id)) {
-    throw new ApiError(409, 'CONFLICT', 'An account with this id already exists.');
-  }
-  if (nameTaken(input.name)) {
-    throw new ApiError(409, 'CONFLICT', `An account named "${input.name}" already exists.`);
-  }
+  // One transaction: the checks and the insert use the same connection.
+  // (If two requests race past the checks, the database's unique constraints
+  // reject the second one and server.js answers 409.)
+  return db.runInTransaction(async () => {
+    const existing = await db.query('SELECT 1 FROM accounts WHERE id = $1', [id]);
+    if (existing.rowCount > 0) {
+      throw new ApiError(409, 'CONFLICT', 'An account with this id already exists.');
+    }
+    if (await nameTaken(input.name)) {
+      throw new ApiError(409, 'CONFLICT', `An account named "${input.name}" already exists.`);
+    }
 
-  insertAccount({ ...input, id });
+    await insertAccount({ ...input, id });
 
-  return ok(findAccount(id), 201, { Location: `/api/accounts/${id}` });
+    return ok(await findAccount(id), 201, { Location: `/api/accounts/${id}` });
+  });
 }
 
 // PUT replaces the account's editable fields (name, type, balance).
-function update({ params, body }) {
+async function update({ params, body }) {
   const id = v.textIdParam(params.id);
-  findAccount(id); // 404 if missing
-  const input = readBody(body, false);
 
-  if (nameTaken(input.name, id)) {
-    throw new ApiError(409, 'CONFLICT', `An account named "${input.name}" already exists.`);
-  }
+  return db.runInTransaction(async () => {
+    await findAccount(id); // 404 if missing
+    const input = readBody(body, false);
 
-  // Transactions may only use cash/bank/online accounts, so an account that has
-  // transactions cannot be switched to a type that cannot hold them.
-  const used = countTransactions(id);
-  if (used > 0 && !MONEY_TYPES.includes(input.type)) {
-    throw new ApiError(
-      409,
-      'IN_USE',
-      `"${input.name}" has ${v.pluralize(used, 'transaction')}, so its type must stay cash, bank or online.`
+    if (await nameTaken(input.name, id)) {
+      throw new ApiError(409, 'CONFLICT', `An account named "${input.name}" already exists.`);
+    }
+
+    // Transactions may only use cash/bank/online accounts, so an account that has
+    // transactions cannot be switched to a type that cannot hold them.
+    const used = await countTransactions(id);
+    if (used > 0 && !MONEY_TYPES.includes(input.type)) {
+      throw new ApiError(
+        409,
+        'IN_USE',
+        `"${input.name}" has ${v.pluralize(used, 'transaction')}, so its type must stay cash, bank or online.`
+      );
+    }
+
+    await db.query(
+      'UPDATE accounts SET name = $1, type = $2, balance_minor = $3 WHERE id = $4',
+      [input.name, input.type, toMinor(input.balance), id]
     );
-  }
 
-  getDb()
-    .prepare('UPDATE accounts SET name = ?, type = ?, balance_minor = ? WHERE id = ?')
-    .run(input.name, input.type, toMinor(input.balance), id);
-
-  return ok(findAccount(id));
+    return ok(await findAccount(id));
+  });
 }
 
-function remove({ params }) {
+async function remove({ params }) {
   const id = v.textIdParam(params.id);
-  const account = findAccount(id);
 
-  // Never cascade-delete financial records (the frontend does not either).
-  const used = countTransactions(id);
-  if (used > 0) {
-    throw new ApiError(
-      409,
-      'IN_USE',
-      `"${account.name}" is used by ${v.pluralize(used, 'transaction')} and cannot be deleted.`
-    );
-  }
+  return db.runInTransaction(async () => {
+    const account = await findAccount(id);
 
-  getDb().prepare('DELETE FROM accounts WHERE id = ?').run(id);
-  return ok({ id });
+    // Never cascade-delete financial records (the frontend does not either).
+    // The foreign key (ON DELETE RESTRICT) enforces the same rule in the database.
+    const used = await countTransactions(id);
+    if (used > 0) {
+      throw new ApiError(
+        409,
+        'IN_USE',
+        `"${account.name}" is used by ${v.pluralize(used, 'transaction')} and cannot be deleted.`
+      );
+    }
+
+    await db.query('DELETE FROM accounts WHERE id = $1', [id]);
+    return ok({ id });
+  });
 }
 
 const routes = {

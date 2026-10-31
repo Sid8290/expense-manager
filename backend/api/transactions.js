@@ -10,21 +10,21 @@
 // include the category's name in `category`, which is what the frontend uses.
 
 const crypto = require('node:crypto');
-const { getDb } = require('../db');
+const db = require('../db');
 const { ApiError, ok, toMinor, fromMinor } = require('./common');
 const v = require('./validate');
 const { MONEY_TYPES } = require('./accounts');
-const { CATEGORY_TYPES } = require('./categories');
+const { CATEGORY_TYPES, MAX_CATEGORY_ID } = require('./categories');
 
 // Same order the frontend shows: newest date first, then newest created.
-// rowid keeps ties in the order they were inserted.
+// seq (an identity column) keeps ties in the order they were inserted.
 const SELECT_TRANSACTIONS = `
   SELECT t.id, t.type, t.description, t.category_id, c.name AS category_name,
          t.account_id, t.amount_minor, t.note, t.date, t.created_at
   FROM transactions t
   JOIN categories c ON c.id = t.category_id
 `;
-const ORDER_NEWEST = 'ORDER BY t.date DESC, t.created_at DESC, t.rowid ASC';
+const ORDER_NEWEST = 'ORDER BY t.date DESC, t.created_at DESC, t.seq ASC';
 
 function toTransaction(row) {
   return {
@@ -41,8 +41,9 @@ function toTransaction(row) {
   };
 }
 
-function findTransaction(id) {
-  const row = getDb().prepare(`${SELECT_TRANSACTIONS} WHERE t.id = ?`).get(id);
+async function findTransaction(id) {
+  const { rows } = await db.query(`${SELECT_TRANSACTIONS} WHERE t.id = $1`, [id]);
+  const row = rows[0];
   if (!row) throw new ApiError(404, 'NOT_FOUND', 'No transaction with this id.');
   return toTransaction(row);
 }
@@ -50,7 +51,7 @@ function findTransaction(id) {
 // Validates the body. Reference checks (does the account/category exist, do
 // the types fit) only run for fields that passed the basic checks, and add
 // their problems to the same `errors` list.
-function readBody(body, isCreate) {
+async function readBody(body, isCreate) {
   const errors = [];
   const fields = ['type', 'description', 'categoryId', 'accountId', 'amount', 'note', 'date'];
   v.rejectUnknownFields(body, isCreate ? ['id', 'createdAt', ...fields] : fields, errors);
@@ -67,10 +68,12 @@ function readBody(body, isCreate) {
     date: v.isoDate(body, 'date', errors)
   };
 
-  const db = getDb();
-
   if (clean.categoryId !== undefined) {
-    const category = db.prepare('SELECT type FROM categories WHERE id = ?').get(clean.categoryId);
+    // Ids beyond the 32-bit column cannot exist (and PostgreSQL would raise a range error).
+    const { rows } = clean.categoryId > MAX_CATEGORY_ID
+      ? { rows: [] }
+      : await db.query('SELECT type FROM categories WHERE id = $1', [clean.categoryId]);
+    const category = rows[0];
     if (!category) {
       errors.push({ field: 'categoryId', message: 'No category with this id.' });
     } else if (clean.type !== undefined && category.type !== clean.type) {
@@ -82,7 +85,8 @@ function readBody(body, isCreate) {
   }
 
   if (clean.accountId !== undefined) {
-    const account = db.prepare('SELECT type FROM accounts WHERE id = ?').get(clean.accountId);
+    const { rows } = await db.query('SELECT type FROM accounts WHERE id = $1', [clean.accountId]);
+    const account = rows[0];
     if (!account) {
       errors.push({ field: 'accountId', message: 'No account with this id.' });
     } else if (!MONEY_TYPES.includes(account.type)) {
@@ -94,25 +98,24 @@ function readBody(body, isCreate) {
   return clean;
 }
 
-function allTransactions() {
-  return getDb().prepare(`${SELECT_TRANSACTIONS} ${ORDER_NEWEST}`).all().map(toTransaction);
+async function allTransactions() {
+  const { rows } = await db.query(`${SELECT_TRANSACTIONS} ${ORDER_NEWEST}`);
+  return rows.map(toTransaction);
 }
 
-function list() {
-  return ok(allTransactions());
+async function list() {
+  return ok(await allTransactions());
 }
 
 // Writes one transaction. The caller has already validated it (readBody,
 // which also checks the account and category) and checked that the id is
 // free. `input.id` must be set.
-function insertTransaction(input) {
-  getDb()
-    .prepare(
-      `INSERT INTO transactions
-         (id, type, description, category_id, account_id, amount_minor, note, date, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
+async function insertTransaction(input) {
+  await db.query(
+    `INSERT INTO transactions
+       (id, type, description, category_id, account_id, amount_minor, note, date, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [
       input.id,
       input.type,
       input.description,
@@ -122,58 +125,71 @@ function insertTransaction(input) {
       input.note,
       input.date,
       input.createdAt ?? Date.now()
-    );
+    ]
+  );
 }
 
-function get({ params }) {
-  return ok(findTransaction(v.textIdParam(params.id)));
+async function get({ params }) {
+  return ok(await findTransaction(v.textIdParam(params.id)));
 }
 
-function create({ body }) {
-  const input = readBody(body, true);
-  const id = input.id || `txn-${crypto.randomUUID()}`;
+// The body is checked, the id is checked and the row is written on ONE
+// connection inside ONE transaction, so the account and category that were
+// validated are the ones the row is saved against. (The foreign keys still
+// protect the data if one of them is deleted at the same moment.)
+async function create({ body }) {
+  return db.runInTransaction(async () => {
+    const input = await readBody(body, true);
+    const id = input.id || `txn-${crypto.randomUUID()}`;
 
-  if (getDb().prepare('SELECT 1 FROM transactions WHERE id = ?').get(id)) {
-    throw new ApiError(409, 'CONFLICT', 'A transaction with this id already exists.');
-  }
+    const existing = await db.query('SELECT 1 FROM transactions WHERE id = $1', [id]);
+    if (existing.rowCount > 0) {
+      throw new ApiError(409, 'CONFLICT', 'A transaction with this id already exists.');
+    }
 
-  insertTransaction({ ...input, id });
+    await insertTransaction({ ...input, id });
 
-  return ok(findTransaction(id), 201, { Location: `/api/transactions/${id}` });
+    return ok(await findTransaction(id), 201, { Location: `/api/transactions/${id}` });
+  });
 }
 
 // PUT replaces every editable field. The id and createdAt never change.
-function update({ params, body }) {
+async function update({ params, body }) {
   const id = v.textIdParam(params.id);
-  findTransaction(id); // 404 if missing
-  const input = readBody(body, false);
 
-  getDb()
-    .prepare(
+  return db.runInTransaction(async () => {
+    await findTransaction(id); // 404 if missing
+    const input = await readBody(body, false);
+
+    await db.query(
       `UPDATE transactions
-          SET type = ?, description = ?, category_id = ?, account_id = ?,
-              amount_minor = ?, note = ?, date = ?
-        WHERE id = ?`
-    )
-    .run(
-      input.type,
-      input.description,
-      input.categoryId,
-      input.accountId,
-      toMinor(input.amount),
-      input.note,
-      input.date,
-      id
+          SET type = $1, description = $2, category_id = $3, account_id = $4,
+              amount_minor = $5, note = $6, date = $7
+        WHERE id = $8`,
+      [
+        input.type,
+        input.description,
+        input.categoryId,
+        input.accountId,
+        toMinor(input.amount),
+        input.note,
+        input.date,
+        id
+      ]
     );
 
-  return ok(findTransaction(id));
+    return ok(await findTransaction(id));
+  });
 }
 
-function remove({ params }) {
+async function remove({ params }) {
   const id = v.textIdParam(params.id);
-  findTransaction(id); // 404 if missing
-  getDb().prepare('DELETE FROM transactions WHERE id = ?').run(id);
-  return ok({ id });
+
+  return db.runInTransaction(async () => {
+    await findTransaction(id); // 404 if missing
+    await db.query('DELETE FROM transactions WHERE id = $1', [id]);
+    return ok({ id });
+  });
 }
 
 const routes = {

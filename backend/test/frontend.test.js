@@ -4,7 +4,7 @@
 //
 // No browser is needed here. Three kinds of checks:
 //   1. The API client (frontend/js/api.js) against the REAL server, in this
-//      process, with a temporary database.
+//      process, with a throw-away PostgreSQL schema (TEST_DATABASE_URL).
 //   2. The REAL frontend/js/script.js loaded into a stubbed browser environment
 //      (Node's `vm`), to test its data layer, legacy-data detection and form
 //      guard without a DOM.
@@ -15,13 +15,13 @@
 const { test, describe, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const http = require('node:http');
 
 const db = require('../db');
 const { createServer } = require('../server');
+const { TEST_URL, createTestSchema } = require('./helpers/pg-test-db');
 const { createClient, ApiError } = require('../../frontend/js/api.js');
 
 const FRONTEND = path.join(__dirname, '..', '..', 'frontend');
@@ -43,13 +43,14 @@ const plain = value => JSON.parse(JSON.stringify(value)); // drops the vm realm 
 // Real server + temporary database for the client tests
 // ---------------------------------------------------------------------------
 
-const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'expense-frontend-test-'));
+let testSchema;
 let server;
 let origin;
 let client;
 
 before(async () => {
-  db.initDatabase(path.join(tmpRoot, 'frontend.db'));
+  testSchema = await createTestSchema();
+  await db.initDatabase({ connectionString: TEST_URL, schema: testSchema.schema });
   server = createServer();
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   origin = `http://127.0.0.1:${server.address().port}`;
@@ -61,12 +62,12 @@ after(async () => {
     server.closeAllConnections();
     server.close(resolve);
   });
-  db.closeDatabase();
-  fs.rmSync(tmpRoot, { recursive: true, force: true });
+  await db.closeDatabase();
+  await testSchema.drop();
 });
 
-beforeEach(() => {
-  db.getDb().exec('DELETE FROM transactions; DELETE FROM categories; DELETE FROM accounts;');
+beforeEach(async () => {
+  await db.query('DELETE FROM transactions; DELETE FROM categories; DELETE FROM accounts;');
 });
 
 async function seed() {
